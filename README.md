@@ -1,48 +1,30 @@
-# Outil de diagnostic réseau automatique (PowerShell)
+# 🔧 Outil de diagnostic réseau (PowerShell)
 
-Mini projet orienté **support IT niveau 1**.
+## 🎯 Objectif
+Automatiser le diagnostic réseau d’un poste utilisateur afin d’identifier rapidement les problèmes de connectivité.
 
-## Objectif
+## ⚙️ Fonctionnalités
+- Vérification de l’adresse IP
+- Test de connexion Internet (ping)
+- Test passerelle
+- Test DNS
+- Génération d’un rapport
 
-Diagnostiquer rapidement un problème réseau sur un poste Windows en automatisant les vérifications essentielles.
+## 💻 Technologies
+- PowerShell
+- Windows
+- Réseaux (TCP/IP)
 
-## Fonctionnalités
+## 🧠 Compétences développées
+- Diagnostic réseau niveau 1
+- Automatisation de tâches IT
+- Analyse de problèmes
+- Support utilisateur
 
-Le script `Diagnostic-Reseau.ps1` :
+## 🚀 Utilisation
+1. Lancer le script PowerShell
+2. Observer les résultats affichés
+3. Consulter le fichier de rapport généré
 
-- détecte l'adresse IP locale ;
-- détecte la passerelle par défaut ;
-- teste la connexion Internet (hôte : `google.com`) ;
-- teste la passerelle ;
-- teste un DNS public (par défaut : `8.8.8.8`) ;
-- affiche un résultat clair (`OK` / `ECHEC`) ;
-- génère un rapport horodaté `.txt`.
-
-## Prérequis
-
-- Windows 10/11
-- PowerShell 5.1+
-
-## Exécution
-
-Depuis le dossier du projet :
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Diagnostic-Reseau.ps1
-```
-
-## Paramètres optionnels
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Diagnostic-Reseau.ps1 -DnsServer 1.1.1.1 -InternetHost cloudflare.com -PingCount 3
-```
-
-- `-DnsServer` : serveur DNS à tester
-- `-InternetHost` : hôte utilisé pour valider l'accès Internet
-- `-PingCount` : nombre de requêtes ping par test
-
-## Sortie
-
-Le rapport est créé dans le même dossier, avec un nom du type :
-
-- `diagnostic_2026-04-22_01-15.txt`
+## 📸 Exemple
+(Ajoute une capture d’écran ici)
