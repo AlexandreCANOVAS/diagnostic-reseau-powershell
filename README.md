@@ -27,4 +27,4 @@ Automatiser le diagnostic réseau d’un poste utilisateur afin d’identifier r
 3. Consulter le fichier de rapport généré
 
 ## 📸 Exemple
-(Ajoute une capture d’écran ici)
+![Exemple de sortie du script](./Assets/exemple-sortie.png)
