@@ -11,6 +11,11 @@ param(
     [int[]]$TcpPorts = @(80, 443, 445, 3389),
     [ValidateRange(300, 5000)][int]$TcpTimeoutMs = 1200,
     [switch]$IncludeWifiScan,
+    [string]$LoadTestTarget = "cloudflare.com",
+    [string]$LoadTestMonitorTarget = "8.8.8.8",
+    [ValidateRange(3, 30)][int]$LoadTestSampleCount = 6,
+    [ValidateRange(2, 20)][int]$LoadTestDurationSec = 6,
+    [ValidateRange(1, 6)][int]$LoadTestParallelStreams = 2,
     [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
@@ -101,6 +106,19 @@ function New-DiagnosticResult {
             Status         = "INCONNU"
             Detail         = "Diagnostic Wi-Fi non lance"
             NearbyCount    = $null
+        }
+        LoadTest   = [PSCustomObject]@{
+            Target             = "Non detecte"
+            MonitorTarget      = "Non detecte"
+            DurationSec        = 0
+            ParallelStreams    = 0
+            Before             = $null
+            UnderLoad          = $null
+            After              = $null
+            AvgLatencyDeltaMs  = $null
+            MaxLatencyDeltaMs  = $null
+            Status             = "INCONNU"
+            Detail             = "Test de charge non lance"
         }
         Tests      = @()
         Summary    = [PSCustomObject]@{
@@ -564,6 +582,118 @@ function Get-WifiDiagnostics {
     return $wifi
 }
 
+function Measure-PingMetrics {
+    param(
+        [string]$Target,
+        [int]$Count
+    )
+
+    $result = [PSCustomObject]@{
+        Target            = $Target
+        AttemptCount      = $Count
+        SuccessCount      = 0
+        PacketLossPercent = 100
+        AverageLatencyMs  = $null
+        MaxLatencyMs      = $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Target) -or $Count -lt 1) {
+        return $result
+    }
+
+    $pingResults = Test-Connection -ComputerName $Target -Count $Count -ErrorAction SilentlyContinue
+    $successCount = @($pingResults).Count
+    $latencies = @($pingResults | ForEach-Object { $_.ResponseTime } | Where-Object { $_ -ne $null })
+
+    $result.SuccessCount = $successCount
+    $result.PacketLossPercent = [Math]::Round((($Count - $successCount) / [double]$Count) * 100, 2)
+    if ($latencies.Count -gt 0) {
+        $result.AverageLatencyMs = [Math]::Round(($latencies | Measure-Object -Average).Average, 2)
+        $result.MaxLatencyMs = ($latencies | Measure-Object -Maximum).Maximum
+    }
+
+    return $result
+}
+
+function Invoke-ControlledNetworkLoadTest {
+    param(
+        [string]$LoadTarget,
+        [string]$MonitorTarget,
+        [int]$SampleCount,
+        [int]$DurationSec,
+        [int]$ParallelStreams
+    )
+
+    $loadResult = [PSCustomObject]@{
+        Target            = $LoadTarget
+        MonitorTarget     = $MonitorTarget
+        DurationSec       = $DurationSec
+        ParallelStreams   = $ParallelStreams
+        Before            = $null
+        UnderLoad         = $null
+        After             = $null
+        AvgLatencyDeltaMs = $null
+        MaxLatencyDeltaMs = $null
+        Status            = "AVERTISSEMENT"
+        Detail            = "Test de charge partiel"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($LoadTarget) -or [string]::IsNullOrWhiteSpace($MonitorTarget)) {
+        $loadResult.Status = "AVERTISSEMENT"
+        $loadResult.Detail = "Cible de charge ou cible de mesure manquante"
+        return $loadResult
+    }
+
+    $loadPingCountPerStream = [Math]::Max(2, [Math]::Ceiling(($DurationSec * 2) / [Math]::Max(1, $ParallelStreams)))
+
+    $loadResult.Before = Measure-PingMetrics -Target $MonitorTarget -Count $SampleCount
+
+    $jobs = @()
+    for ($i = 1; $i -le $ParallelStreams; $i++) {
+        $jobs += Start-Job -ScriptBlock {
+            param($target, $count)
+            Test-Connection -ComputerName $target -Count $count -ErrorAction SilentlyContinue | Out-Null
+        } -ArgumentList $LoadTarget, $loadPingCountPerStream
+    }
+
+    $loadResult.UnderLoad = Measure-PingMetrics -Target $MonitorTarget -Count $SampleCount
+
+    foreach ($job in $jobs) {
+        Wait-Job -Job $job -Timeout ($DurationSec + 3) | Out-Null
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+
+    $loadResult.After = Measure-PingMetrics -Target $MonitorTarget -Count $SampleCount
+
+    $beforeAvg = $loadResult.Before.AverageLatencyMs
+    $underAvg = $loadResult.UnderLoad.AverageLatencyMs
+    $beforeMax = $loadResult.Before.MaxLatencyMs
+    $underMax = $loadResult.UnderLoad.MaxLatencyMs
+
+    if ($beforeAvg -ne $null -and $underAvg -ne $null) {
+        $loadResult.AvgLatencyDeltaMs = [Math]::Round(($underAvg - $beforeAvg), 2)
+    }
+    if ($beforeMax -ne $null -and $underMax -ne $null) {
+        $loadResult.MaxLatencyDeltaMs = [Math]::Round(($underMax - $beforeMax), 2)
+    }
+
+    $underLoss = $loadResult.UnderLoad.PacketLossPercent
+    if ($underLoss -ge 10) {
+        $loadResult.Status = "ECHEC"
+        $loadResult.Detail = "Perte de paquets elevee detectee sous charge"
+    }
+    elseif ($loadResult.AvgLatencyDeltaMs -ge 20 -or $underLoss -gt 0) {
+        $loadResult.Status = "AVERTISSEMENT"
+        $loadResult.Detail = "Degradation de latence detectee sous charge"
+    }
+    else {
+        $loadResult.Status = "OK"
+        $loadResult.Detail = "Comportement reseau stable sous charge controlee"
+    }
+
+    return $loadResult
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -598,6 +728,7 @@ $routingDiagnostic = Get-RoutingDiagnostic -Gateway $gateway -TraceTarget $Routi
 $effectiveTcpTarget = if ([string]::IsNullOrWhiteSpace($TcpTarget)) { $InternetHost } else { $TcpTarget }
 $tcpPortDiagnostic = Get-TcpPortDiagnostics -Target $effectiveTcpTarget -Ports $TcpPorts -TimeoutMs $TcpTimeoutMs
 $wifiDiagnostic = Get-WifiDiagnostics -IncludeScan:$IncludeWifiScan
+$loadTestResult = Invoke-ControlledNetworkLoadTest -LoadTarget $LoadTestTarget -MonitorTarget $LoadTestMonitorTarget -SampleCount $LoadTestSampleCount -DurationSec $LoadTestDurationSec -ParallelStreams $LoadTestParallelStreams
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
@@ -608,6 +739,11 @@ $diagnosticResult.Parameters.TcpTarget = $effectiveTcpTarget
 $diagnosticResult.Parameters.TcpPorts = @($TcpPorts)
 $diagnosticResult.Parameters.TcpTimeoutMs = $TcpTimeoutMs
 $diagnosticResult.Parameters.IncludeWifiScan = [bool]$IncludeWifiScan
+$diagnosticResult.Parameters.LoadTestTarget = $LoadTestTarget
+$diagnosticResult.Parameters.LoadTestMonitorTarget = $LoadTestMonitorTarget
+$diagnosticResult.Parameters.LoadTestSampleCount = $LoadTestSampleCount
+$diagnosticResult.Parameters.LoadTestDurationSec = $LoadTestDurationSec
+$diagnosticResult.Parameters.LoadTestParallelStreams = $LoadTestParallelStreams
 $diagnosticResult.Network.LocalIPv4 = $localIp
 $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
@@ -626,6 +762,7 @@ $diagnosticResult.Dns = $dnsResolutionDiagnostic
 $diagnosticResult.Routing = $routingDiagnostic
 $diagnosticResult.Ports = $tcpPortDiagnostic
 $diagnosticResult.Wifi = $wifiDiagnostic
+$diagnosticResult.LoadTest = $loadTestResult
 
 # Fonction utilitaire de test ping
 function Test-NetworkTarget {
@@ -782,6 +919,25 @@ Write-Host "Signal : $(if ($wifiDiagnostic.SignalPercent -ne $null) { "$($wifiDi
 Write-Host "Canal : $($wifiDiagnostic.Channel)"
 $diagnosticResult.Tests += $wifiTest
 
+Write-Host "`n[10] Test charge reseau controlee :" -ForegroundColor Yellow
+$loadTest = [PSCustomObject]@{
+    Test              = "Network Load"
+    Cible             = "$LoadTestTarget (monitor: $LoadTestMonitorTarget)"
+    Statut            = $loadTestResult.Status
+    Detail            = $loadTestResult.Detail
+    AttemptCount      = $LoadTestSampleCount
+    SuccessCount      = $loadTestResult.UnderLoad.SuccessCount
+    PacketLossPercent = $loadTestResult.UnderLoad.PacketLossPercent
+    AverageLatencyMs  = $loadTestResult.UnderLoad.AverageLatencyMs
+    MaxLatencyMs      = $loadTestResult.UnderLoad.MaxLatencyMs
+}
+Write-Host "$($loadTest.Statut) - $($loadTest.Detail)"
+Write-Host "Before : avg $($loadTestResult.Before.AverageLatencyMs) ms / loss $($loadTestResult.Before.PacketLossPercent)%"
+Write-Host "Under  : avg $($loadTestResult.UnderLoad.AverageLatencyMs) ms / max $($loadTestResult.UnderLoad.MaxLatencyMs) ms / loss $($loadTestResult.UnderLoad.PacketLossPercent)%"
+Write-Host "After  : avg $($loadTestResult.After.AverageLatencyMs) ms / loss $($loadTestResult.After.PacketLossPercent)%"
+Write-Host "Delta avg/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms"
+$diagnosticResult.Tests += $loadTest
+
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
 $diagnosticResult.Summary.WarningCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
@@ -817,6 +973,7 @@ $reportLines = @(
     "- $($routingTest.Test) [$($routingTest.Cible)] : $($routingTest.Statut) - $($routingTest.Detail)",
     "- $($tcpPortTest.Test) [$($tcpPortTest.Cible)] : $($tcpPortTest.Statut) - $($tcpPortTest.Detail)",
     "- $($wifiTest.Test) [$($wifiTest.Cible)] : $($wifiTest.Statut) - $($wifiTest.Detail)",
+    "- $($loadTest.Test) [$($loadTest.Cible)] : $($loadTest.Statut) - $($loadTest.Detail)",
     "",
     "[3] DNS resolution details",
     "Serveur teste : $effectiveDnsServer",
@@ -850,13 +1007,23 @@ $reportLines = @(
     "Reseaux detectes : $(if ($wifiDiagnostic.NearbyCount -ne $null) { $wifiDiagnostic.NearbyCount } else { 'N/A' })",
     "Statut : $($wifiDiagnostic.Status) - $($wifiDiagnostic.Detail)",
     "",
-    "[7] Resume",
+    "[7] Network load details",
+    "Charge cible : $LoadTestTarget",
+    "Cible mesure : $LoadTestMonitorTarget",
+    "Duree / streams : ${LoadTestDurationSec}s / $LoadTestParallelStreams",
+    "Before : avg $($loadTestResult.Before.AverageLatencyMs) ms, max $($loadTestResult.Before.MaxLatencyMs) ms, loss $($loadTestResult.Before.PacketLossPercent)%",
+    "Under  : avg $($loadTestResult.UnderLoad.AverageLatencyMs) ms, max $($loadTestResult.UnderLoad.MaxLatencyMs) ms, loss $($loadTestResult.UnderLoad.PacketLossPercent)%",
+    "After  : avg $($loadTestResult.After.AverageLatencyMs) ms, max $($loadTestResult.After.MaxLatencyMs) ms, loss $($loadTestResult.After.PacketLossPercent)%",
+    "Delta avg/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms",
+    "Statut : $($loadTestResult.Status) - $($loadTestResult.Detail)",
+    "",
+    "[8] Resume",
     "Etat global : $overallStatus",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
-    "[8] ipconfig /all",
+    "[9] ipconfig /all",
     ""
 )
 
@@ -887,6 +1054,6 @@ $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 
-Write-Host "`n[10] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-Host "`n[11] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
