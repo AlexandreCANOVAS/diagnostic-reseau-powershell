@@ -4,6 +4,7 @@
 param(
     [string]$DnsServer = "8.8.8.8",
     [string]$InternetHost = "google.com",
+    [string[]]$DnsTestDomains = @("google.com", "microsoft.com", "github.com"),
     [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
@@ -36,6 +37,7 @@ function New-DiagnosticResult {
             DnsServer    = $DnsServerValue
             InternetHost = $InternetHostValue
             PingCount    = $PingCountValue
+            DnsTestDomains = @()
         }
         Network    = [PSCustomObject]@{
             LocalIPv4       = "Non detectee"
@@ -52,6 +54,15 @@ function New-DiagnosticResult {
             LinkSpeed       = "Non detectee"
             InterfaceAlias  = "Non detectee"
             InterfaceStatus = "Non detectee"
+        }
+        Dns        = [PSCustomObject]@{
+            Server       = "Non detecte"
+            Domains      = @()
+            Entries      = @()
+            SuccessCount = 0
+            FailureCount = 0
+            Status       = "INCONNU"
+            Detail       = "Diagnostic DNS non lance"
         }
         Tests      = @()
         Summary    = [PSCustomObject]@{
@@ -164,6 +175,90 @@ function Get-DhcpDiagnostic {
     return $dhcpInfo
 }
 
+function Get-DnsResolutionDiagnostic {
+    param(
+        [string]$DnsServer,
+        [string[]]$Domains
+    )
+
+    $result = [PSCustomObject]@{
+        Server       = $DnsServer
+        Domains      = @($Domains)
+        Entries      = @()
+        SuccessCount = 0
+        FailureCount = 0
+        Status       = "AVERTISSEMENT"
+        Detail       = "Diagnostic DNS partiel"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($DnsServer) -or $DnsServer -eq "Non detectee") {
+        $result.Status = "ECHEC"
+        $result.Detail = "Serveur DNS non disponible pour le test de resolution"
+        return $result
+    }
+
+    if (-not (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue)) {
+        $result.Status = "AVERTISSEMENT"
+        $result.Detail = "Resolve-DnsName indisponible sur ce systeme"
+        return $result
+    }
+
+    $domainsToTest = @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($domainsToTest.Count -eq 0) {
+        $result.Status = "AVERTISSEMENT"
+        $result.Detail = "Aucun domaine DNS a tester"
+        return $result
+    }
+
+    foreach ($domain in $domainsToTest) {
+        $entryStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            $records = Resolve-DnsName -Name $domain -Server $DnsServer -Type A -DnsOnly -ErrorAction Stop
+            $entryStopwatch.Stop()
+
+            $ipAddresses = @($records | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress -Unique)
+            $status = if ($ipAddresses.Count -gt 0) { "OK" } else { "AVERTISSEMENT" }
+            $detail = if ($ipAddresses.Count -gt 0) { "Resolution reussie" } else { "Aucune adresse IPv4 retournee" }
+
+            $result.Entries += [PSCustomObject]@{
+                Domain      = $domain
+                Status      = $status
+                Detail      = $detail
+                LatencyMs   = [Math]::Round($entryStopwatch.Elapsed.TotalMilliseconds, 2)
+                IpAddresses = $ipAddresses
+            }
+        }
+        catch {
+            $entryStopwatch.Stop()
+            $result.Entries += [PSCustomObject]@{
+                Domain      = $domain
+                Status      = "ECHEC"
+                Detail      = "Erreur DNS: $($_.Exception.Message)"
+                LatencyMs   = [Math]::Round($entryStopwatch.Elapsed.TotalMilliseconds, 2)
+                IpAddresses = @()
+            }
+        }
+    }
+
+    $result.SuccessCount = @($result.Entries | Where-Object { $_.Status -eq "OK" }).Count
+    $result.FailureCount = @($result.Entries | Where-Object { $_.Status -eq "ECHEC" }).Count
+
+    if ($result.FailureCount -eq $result.Entries.Count) {
+        $result.Status = "ECHEC"
+        $result.Detail = "Aucune resolution DNS reussie"
+    }
+    elseif ($result.FailureCount -gt 0) {
+        $result.Status = "AVERTISSEMENT"
+        $result.Detail = "Resolution DNS partiellement reussie"
+    }
+    else {
+        $result.Status = "OK"
+        $result.Detail = "Resolution DNS valide pour tous les domaines testes"
+    }
+
+    return $result
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -187,9 +282,17 @@ $linkSpeed = if ($activeConfig -and $activeConfig.NetAdapter) { [string]$activeC
 $interfaceAlias = if ($activeConfig) { $activeConfig.InterfaceAlias } else { "Non detectee" }
 $interfaceStatus = if ($activeConfig -and $activeConfig.NetAdapter) { $activeConfig.NetAdapter.Status } else { "Non detectee" }
 $dhcpDiagnostic = Get-DhcpDiagnostic -InterfaceIndex $interfaceIndex -LocalIPv4 $localIp -FallbackDhcpEnabled $dhcpEnabled
+$effectiveDnsServer = if ([string]::IsNullOrWhiteSpace($DnsServer)) {
+    if ($dnsServers.Count -gt 0) { $dnsServers[0] } else { "Non detectee" }
+}
+else {
+    $DnsServer
+}
+$dnsResolutionDiagnostic = Get-DnsResolutionDiagnostic -DnsServer $effectiveDnsServer -Domains $DnsTestDomains
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
+$diagnosticResult.Parameters.DnsTestDomains = @($DnsTestDomains)
 $diagnosticResult.Network.LocalIPv4 = $localIp
 $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
@@ -204,6 +307,7 @@ $diagnosticResult.Network.MacAddress = $macAddress
 $diagnosticResult.Network.LinkSpeed = $linkSpeed
 $diagnosticResult.Network.InterfaceAlias = $interfaceAlias
 $diagnosticResult.Network.InterfaceStatus = $interfaceStatus
+$diagnosticResult.Dns = $dnsResolutionDiagnostic
 
 # Fonction utilitaire de test ping
 function Test-NetworkTarget {
@@ -270,8 +374,8 @@ $gatewayTest = Test-NetworkTarget -Target $gateway -Label "Passerelle"
 Write-Host "$($gatewayTest.Statut) - $($gatewayTest.Detail)"
 $diagnosticResult.Tests += $gatewayTest
 
-Write-Host "`n[4] Test DNS ($DnsServer) :" -ForegroundColor Yellow
-$dnsTest = Test-NetworkTarget -Target $DnsServer -Label "DNS"
+Write-Host "`n[4] Test DNS ($effectiveDnsServer) :" -ForegroundColor Yellow
+$dnsTest = Test-NetworkTarget -Target $effectiveDnsServer -Label "DNS"
 Write-Host "$($dnsTest.Statut) - $($dnsTest.Detail)"
 $diagnosticResult.Tests += $dnsTest
 
@@ -289,6 +393,21 @@ $dhcpTest = [PSCustomObject]@{
 }
 Write-Host "$($dhcpTest.Statut) - $($dhcpTest.Detail)"
 $diagnosticResult.Tests += $dhcpTest
+
+Write-Host "`n[6] Test resolution DNS :" -ForegroundColor Yellow
+$dnsResolutionTest = [PSCustomObject]@{
+    Test              = "DNS Resolution"
+    Cible             = $effectiveDnsServer
+    Statut            = $dnsResolutionDiagnostic.Status
+    Detail            = $dnsResolutionDiagnostic.Detail
+    AttemptCount      = @($dnsResolutionDiagnostic.Entries).Count
+    SuccessCount      = $dnsResolutionDiagnostic.SuccessCount
+    PacketLossPercent = $null
+    AverageLatencyMs  = $null
+    MaxLatencyMs      = $null
+}
+Write-Host "$($dnsResolutionTest.Statut) - $($dnsResolutionTest.Detail)"
+$diagnosticResult.Tests += $dnsResolutionTest
 
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
@@ -321,16 +440,29 @@ $reportLines = @(
     "- $($gatewayTest.Test) [$($gatewayTest.Cible)] : $($gatewayTest.Statut) - $($gatewayTest.Detail)",
     "- $($dnsTest.Test) [$($dnsTest.Cible)] : $($dnsTest.Statut) - $($dnsTest.Detail)",
     "- $($dhcpTest.Test) [$($dhcpTest.Cible)] : $($dhcpTest.Statut) - $($dhcpTest.Detail)",
+    "- $($dnsResolutionTest.Test) [$($dnsResolutionTest.Cible)] : $($dnsResolutionTest.Statut) - $($dnsResolutionTest.Detail)",
     "",
-    "[3] Resume",
+    "[3] DNS resolution details",
+    "Serveur teste : $effectiveDnsServer",
+    "Domaines testes : $(@($dnsResolutionDiagnostic.Domains) -join ', ')",
+    "Succes : $($dnsResolutionDiagnostic.SuccessCount)",
+    "Echecs : $($dnsResolutionDiagnostic.FailureCount)",
+    "Statut : $($dnsResolutionDiagnostic.Status) - $($dnsResolutionDiagnostic.Detail)",
+    "",
+    "[4] Resume",
     "Etat global : $overallStatus",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
-    "[4] ipconfig /all",
+    "[5] ipconfig /all",
     ""
 )
+
+foreach ($entry in $dnsResolutionDiagnostic.Entries) {
+    $ipValue = if (@($entry.IpAddresses).Count -gt 0) { @($entry.IpAddresses) -join ", " } else { "N/A" }
+    $reportLines += "- $($entry.Domain) : $($entry.Status) - $($entry.Detail) - Latence $($entry.LatencyMs) ms - IP $ipValue"
+}
 
 $stopwatch.Stop()
 $diagnosticResult.Metadata.DurationMs = $stopwatch.ElapsedMilliseconds
@@ -340,6 +472,6 @@ $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 
-Write-Host "`n[6] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-Host "`n[7] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
