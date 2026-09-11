@@ -4,7 +4,7 @@
 param(
     [string]$DnsServer = "8.8.8.8",
     [string]$InternetHost = "google.com",
-    [int]$PingCount = 2
+    [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -39,7 +39,13 @@ function New-DiagnosticResult {
         }
         Network    = [PSCustomObject]@{
             LocalIPv4       = "Non detectee"
+            PrefixLength    = $null
+            SubnetMask      = "Non detectee"
             Gateway         = "Non detectee"
+            DnsServers      = @()
+            DhcpEnabled     = "Inconnu"
+            MacAddress      = "Non detectee"
+            LinkSpeed       = "Non detectee"
             InterfaceAlias  = "Non detectee"
             InterfaceStatus = "Non detectee"
         }
@@ -52,20 +58,76 @@ function New-DiagnosticResult {
     }
 }
 
+function Convert-PrefixLengthToSubnetMask {
+    param(
+        [int]$PrefixLength
+    )
+
+    if ($PrefixLength -lt 0 -or $PrefixLength -gt 32) {
+        return "Non detectee"
+    }
+
+    $maskValue = [uint32]::MaxValue
+    if ($PrefixLength -eq 0) {
+        $maskValue = 0
+    }
+    else {
+        $maskValue = $maskValue -shl (32 - $PrefixLength)
+    }
+
+    $bytes = [BitConverter]::GetBytes($maskValue)
+    [Array]::Reverse($bytes)
+    return ([System.Net.IPAddress]::new($bytes)).ToString()
+}
+
+function Get-OverallStatus {
+    param(
+        [PSCustomObject]$Summary
+    )
+
+    if ($Summary.FailureCount -gt 0) {
+        return "CRITICAL"
+    }
+
+    if ($Summary.WarningCount -gt 0) {
+        return "WARNING"
+    }
+
+    return "HEALTHY"
+}
+
 # Récupération de l'interface active (IPv4)
-$activeConfig = Get-NetIPConfiguration |
-    Where-Object { $_.IPv4Address -and $_.NetAdapter.Status -eq "Up" } |
-    Select-Object -First 1
+$activeConfig = $null
+try {
+    $activeConfig = Get-NetIPConfiguration |
+        Where-Object { $_.IPv4Address -and $_.NetAdapter.Status -eq "Up" } |
+        Select-Object -First 1
+}
+catch {
+    $activeConfig = $null
+}
 
 $localIp = if ($activeConfig) { $activeConfig.IPv4Address.IPAddress } else { "Non detectee" }
+$prefixLength = if ($activeConfig -and $activeConfig.IPv4Address) { $activeConfig.IPv4Address.PrefixLength } else { $null }
+$subnetMask = if ($prefixLength -ne $null) { Convert-PrefixLengthToSubnetMask -PrefixLength $prefixLength } else { "Non detectee" }
 $gateway = if ($activeConfig -and $activeConfig.IPv4DefaultGateway) { $activeConfig.IPv4DefaultGateway.NextHop } else { "Non detectee" }
+$dnsServers = if ($activeConfig -and $activeConfig.DNSServer -and $activeConfig.DNSServer.ServerAddresses) { @($activeConfig.DNSServer.ServerAddresses) } else { @() }
+$dhcpEnabled = if ($activeConfig -and $activeConfig.NetIPv4Interface) { [string]$activeConfig.NetIPv4Interface.Dhcp } else { "Inconnu" }
+$macAddress = if ($activeConfig -and $activeConfig.NetAdapter) { $activeConfig.NetAdapter.MacAddress } else { "Non detectee" }
+$linkSpeed = if ($activeConfig -and $activeConfig.NetAdapter) { [string]$activeConfig.NetAdapter.LinkSpeed } else { "Non detectee" }
 $interfaceAlias = if ($activeConfig) { $activeConfig.InterfaceAlias } else { "Non detectee" }
 $interfaceStatus = if ($activeConfig -and $activeConfig.NetAdapter) { $activeConfig.NetAdapter.Status } else { "Non detectee" }
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
 $diagnosticResult.Network.LocalIPv4 = $localIp
+$diagnosticResult.Network.PrefixLength = $prefixLength
+$diagnosticResult.Network.SubnetMask = $subnetMask
 $diagnosticResult.Network.Gateway = $gateway
+$diagnosticResult.Network.DnsServers = $dnsServers
+$diagnosticResult.Network.DhcpEnabled = $dhcpEnabled
+$diagnosticResult.Network.MacAddress = $macAddress
+$diagnosticResult.Network.LinkSpeed = $linkSpeed
 $diagnosticResult.Network.InterfaceAlias = $interfaceAlias
 $diagnosticResult.Network.InterfaceStatus = $interfaceStatus
 
@@ -116,7 +178,12 @@ function Test-NetworkTarget {
 
 Write-Host "`n[1] Adresse IP locale :" -ForegroundColor Yellow
 Write-Host "IP : $localIp"
+Write-Host "Masque : $subnetMask"
 Write-Host "Passerelle : $gateway"
+Write-Host "Interface : $interfaceAlias ($interfaceStatus)"
+Write-Host "Vitesse lien : $linkSpeed"
+Write-Host "DHCP : $dhcpEnabled"
+Write-Host "DNS detectes : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non detectes' })"
 
 Write-Host "`n[2] Test connexion Internet ($InternetHost) :" -ForegroundColor Yellow
 $internetTest = Test-NetworkTarget -Target $InternetHost -Label "Connexion Internet"
@@ -136,6 +203,7 @@ $diagnosticResult.Tests += $dnsTest
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
 $diagnosticResult.Summary.WarningCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
+$overallStatus = Get-OverallStatus -Summary $diagnosticResult.Summary
 
 # Construction du rapport
 $reportLines = @(
@@ -145,8 +213,14 @@ $reportLines = @(
     "Utilisateur : $env:USERNAME",
     "",
     "[1] Configuration locale",
+    "Interface : $interfaceAlias ($interfaceStatus)",
     "IP locale : $localIp",
+    "Masque : $subnetMask",
+    "MAC : $macAddress",
+    "Vitesse lien : $linkSpeed",
     "Passerelle : $gateway",
+    "DHCP : $dhcpEnabled",
+    "DNS detectes : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non detectes' })",
     "",
     "[2] Resultats des tests",
     "- $($internetTest.Test) [$($internetTest.Cible)] : $($internetTest.Statut) - $($internetTest.Detail)",
@@ -154,6 +228,7 @@ $reportLines = @(
     "- $($dnsTest.Test) [$($dnsTest.Cible)] : $($dnsTest.Statut) - $($dnsTest.Detail)",
     "",
     "[3] Resume",
+    "Etat global : $overallStatus",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
@@ -164,6 +239,7 @@ $reportLines = @(
 
 $stopwatch.Stop()
 $diagnosticResult.Metadata.DurationMs = $stopwatch.ElapsedMilliseconds
+$diagnosticResult | Add-Member -MemberType NoteProperty -Name OverallStatus -Value $overallStatus
 
 $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
