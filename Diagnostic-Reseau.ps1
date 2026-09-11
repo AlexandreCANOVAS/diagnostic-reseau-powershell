@@ -16,6 +16,9 @@ param(
     [ValidateRange(3, 30)][int]$LoadTestSampleCount = 6,
     [ValidateRange(2, 20)][int]$LoadTestDurationSec = 6,
     [ValidateRange(1, 6)][int]$LoadTestParallelStreams = 2,
+    [switch]$EnableBandwidthTest,
+    [string]$BandwidthTestUrl = "https://proof.ovh.net/files/10Mb.dat",
+    [ValidateRange(1, 60)][int]$BandwidthTimeoutSec = 20,
     [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
@@ -119,6 +122,15 @@ function New-DiagnosticResult {
             MaxLatencyDeltaMs  = $null
             Status             = "INCONNU"
             Detail             = "Test de charge non lance"
+        }
+        Bandwidth  = [PSCustomObject]@{
+            Enabled          = $false
+            TestUrl          = "N/A"
+            DownloadMbps     = $null
+            DownloadBytes    = $null
+            DurationMs       = $null
+            Status           = "INCONNU"
+            Detail           = "Test de debit non lance"
         }
         Tests      = @()
         Summary    = [PSCustomObject]@{
@@ -694,6 +706,72 @@ function Invoke-ControlledNetworkLoadTest {
     return $loadResult
 }
 
+function Invoke-BandwidthDiagnostic {
+    param(
+        [switch]$Enabled,
+        [string]$TestUrl,
+        [int]$TimeoutSec
+    )
+
+    $bandwidth = [PSCustomObject]@{
+        Enabled       = [bool]$Enabled
+        TestUrl       = $TestUrl
+        DownloadMbps  = $null
+        DownloadBytes = $null
+        DurationMs    = $null
+        Status        = "INFO"
+        Detail        = "Test de debit desactive"
+    }
+
+    if (-not $Enabled) {
+        return $bandwidth
+    }
+
+    if ([string]::IsNullOrWhiteSpace($TestUrl)) {
+        $bandwidth.Status = "AVERTISSEMENT"
+        $bandwidth.Detail = "URL de test debit manquante"
+        return $bandwidth
+    }
+
+    try {
+        $request = [System.Net.HttpWebRequest]::Create($TestUrl)
+        $request.Method = "GET"
+        $request.Timeout = $TimeoutSec * 1000
+        $request.ReadWriteTimeout = $TimeoutSec * 1000
+        $request.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+        if ($request.Proxy) {
+            $request.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+        }
+        $request.Headers["Cache-Control"] = "no-cache"
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $response = $request.GetResponse()
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object byte[] 32768
+        $bytes = 0
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $bytes += $read
+        }
+        $stream.Close()
+        $response.Close()
+        $timer.Stop()
+
+        $seconds = [Math]::Max(0.001, $timer.Elapsed.TotalSeconds)
+        $mbps = [Math]::Round((($bytes * 8) / 1MB) / $seconds, 2)
+
+        $bandwidth.DownloadBytes = $bytes
+        $bandwidth.DurationMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 2)
+        $bandwidth.DownloadMbps = $mbps
+        $bandwidth.Status = "OK"
+        $bandwidth.Detail = "Debit descendant mesure avec succes"
+    }
+    catch {
+        $bandwidth.Status = "AVERTISSEMENT"
+        $bandwidth.Detail = "Mesure de debit indisponible: $($_.Exception.Message)"
+    }
+
+    return $bandwidth
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -729,6 +807,7 @@ $effectiveTcpTarget = if ([string]::IsNullOrWhiteSpace($TcpTarget)) { $InternetH
 $tcpPortDiagnostic = Get-TcpPortDiagnostics -Target $effectiveTcpTarget -Ports $TcpPorts -TimeoutMs $TcpTimeoutMs
 $wifiDiagnostic = Get-WifiDiagnostics -IncludeScan:$IncludeWifiScan
 $loadTestResult = Invoke-ControlledNetworkLoadTest -LoadTarget $LoadTestTarget -MonitorTarget $LoadTestMonitorTarget -SampleCount $LoadTestSampleCount -DurationSec $LoadTestDurationSec -ParallelStreams $LoadTestParallelStreams
+$bandwidthResult = Invoke-BandwidthDiagnostic -Enabled:$EnableBandwidthTest -TestUrl $BandwidthTestUrl -TimeoutSec $BandwidthTimeoutSec
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
@@ -744,6 +823,9 @@ $diagnosticResult.Parameters.LoadTestMonitorTarget = $LoadTestMonitorTarget
 $diagnosticResult.Parameters.LoadTestSampleCount = $LoadTestSampleCount
 $diagnosticResult.Parameters.LoadTestDurationSec = $LoadTestDurationSec
 $diagnosticResult.Parameters.LoadTestParallelStreams = $LoadTestParallelStreams
+$diagnosticResult.Parameters.EnableBandwidthTest = [bool]$EnableBandwidthTest
+$diagnosticResult.Parameters.BandwidthTestUrl = $BandwidthTestUrl
+$diagnosticResult.Parameters.BandwidthTimeoutSec = $BandwidthTimeoutSec
 $diagnosticResult.Network.LocalIPv4 = $localIp
 $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
@@ -763,6 +845,7 @@ $diagnosticResult.Routing = $routingDiagnostic
 $diagnosticResult.Ports = $tcpPortDiagnostic
 $diagnosticResult.Wifi = $wifiDiagnostic
 $diagnosticResult.LoadTest = $loadTestResult
+$diagnosticResult.Bandwidth = $bandwidthResult
 
 # Fonction utilitaire de test ping
 function Test-NetworkTarget {
@@ -938,6 +1021,26 @@ Write-Host "After  : avg $($loadTestResult.After.AverageLatencyMs) ms / loss $($
 Write-Host "Delta avg/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms"
 $diagnosticResult.Tests += $loadTest
 
+Write-Host "`n[11] Test debit reseau :" -ForegroundColor Yellow
+$bandwidthTest = [PSCustomObject]@{
+    Test              = "Bandwidth"
+    Cible             = $BandwidthTestUrl
+    Statut            = $bandwidthResult.Status
+    Detail            = $bandwidthResult.Detail
+    AttemptCount      = if ($EnableBandwidthTest) { 1 } else { 0 }
+    SuccessCount      = if ($bandwidthResult.Status -eq "OK") { 1 } else { 0 }
+    PacketLossPercent = $null
+    AverageLatencyMs  = $null
+    MaxLatencyMs      = $null
+}
+if ($bandwidthResult.Status -eq "OK") {
+    Write-Host "OK - Download ~ $($bandwidthResult.DownloadMbps) Mbps ($($bandwidthResult.DownloadBytes) octets en $($bandwidthResult.DurationMs) ms)"
+}
+else {
+    Write-Host "$($bandwidthResult.Status) - $($bandwidthResult.Detail)"
+}
+$diagnosticResult.Tests += $bandwidthTest
+
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
 $diagnosticResult.Summary.WarningCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
@@ -974,6 +1077,7 @@ $reportLines = @(
     "- $($tcpPortTest.Test) [$($tcpPortTest.Cible)] : $($tcpPortTest.Statut) - $($tcpPortTest.Detail)",
     "- $($wifiTest.Test) [$($wifiTest.Cible)] : $($wifiTest.Statut) - $($wifiTest.Detail)",
     "- $($loadTest.Test) [$($loadTest.Cible)] : $($loadTest.Statut) - $($loadTest.Detail)",
+    "- $($bandwidthTest.Test) [$($bandwidthTest.Cible)] : $($bandwidthTest.Statut) - $($bandwidthTest.Detail)",
     "",
     "[3] DNS resolution details",
     "Serveur teste : $effectiveDnsServer",
@@ -1017,13 +1121,21 @@ $reportLines = @(
     "Delta avg/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms",
     "Statut : $($loadTestResult.Status) - $($loadTestResult.Detail)",
     "",
-    "[8] Resume",
+    "[8] Bandwidth details",
+    "Active : $([bool]$EnableBandwidthTest)",
+    "URL : $BandwidthTestUrl",
+    "Download (Mbps) : $(if ($bandwidthResult.DownloadMbps -ne $null) { $bandwidthResult.DownloadMbps } else { 'N/A' })",
+    "Donnees lues (octets) : $(if ($bandwidthResult.DownloadBytes -ne $null) { $bandwidthResult.DownloadBytes } else { 'N/A' })",
+    "Duree (ms) : $(if ($bandwidthResult.DurationMs -ne $null) { $bandwidthResult.DurationMs } else { 'N/A' })",
+    "Statut : $($bandwidthResult.Status) - $($bandwidthResult.Detail)",
+    "",
+    "[9] Resume",
     "Etat global : $overallStatus",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
-    "[9] ipconfig /all",
+    "[10] ipconfig /all",
     ""
 )
 
@@ -1054,6 +1166,6 @@ $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 
-Write-Host "`n[11] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-Host "`n[12] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
