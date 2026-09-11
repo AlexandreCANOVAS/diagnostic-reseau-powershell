@@ -5,6 +5,8 @@ param(
     [string]$DnsServer = "8.8.8.8",
     [string]$InternetHost = "google.com",
     [string[]]$DnsTestDomains = @("google.com", "microsoft.com", "github.com"),
+    [string]$RoutingTraceTarget = "1.1.1.1",
+    [ValidateRange(1, 15)][int]$TraceMaxHops = 6,
     [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
@@ -63,6 +65,15 @@ function New-DiagnosticResult {
             FailureCount = 0
             Status       = "INCONNU"
             Detail       = "Diagnostic DNS non lance"
+        }
+        Routing    = [PSCustomObject]@{
+            TraceTarget       = "Non detecte"
+            DefaultRoute      = "Non detectee"
+            InterfaceAlias    = "Non detectee"
+            NextHopReachable  = $false
+            TraceSummary      = @()
+            Status            = "INCONNU"
+            Detail            = "Diagnostic routage non lance"
         }
         Tests      = @()
         Summary    = [PSCustomObject]@{
@@ -259,6 +270,87 @@ function Get-DnsResolutionDiagnostic {
     return $result
 }
 
+function Get-RoutingDiagnostic {
+    param(
+        [string]$Gateway,
+        [string]$TraceTarget,
+        [int]$MaxHops
+    )
+
+    $routing = [PSCustomObject]@{
+        TraceTarget      = $TraceTarget
+        DefaultRoute     = "Non detectee"
+        InterfaceAlias   = "Non detectee"
+        NextHopReachable = $false
+        TraceSummary     = @()
+        Status           = "AVERTISSEMENT"
+        Detail           = "Diagnostic routage partiel"
+    }
+
+    try {
+        $defaultRoute = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" |
+            Sort-Object -Property RouteMetric |
+            Select-Object -First 1
+
+        if ($defaultRoute) {
+            $routing.DefaultRoute = "$($defaultRoute.DestinationPrefix) via $($defaultRoute.NextHop)"
+            $routing.InterfaceAlias = $defaultRoute.InterfaceAlias
+        }
+    }
+    catch {
+        $routing.DefaultRoute = "Non detectee"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Gateway) -and $Gateway -ne "Non detectee") {
+        $gatewayPing = Test-Connection -ComputerName $Gateway -Count 1 -Quiet -ErrorAction SilentlyContinue
+        $routing.NextHopReachable = [bool]$gatewayPing
+    }
+
+    if ([string]::IsNullOrWhiteSpace($TraceTarget)) {
+        $routing.Status = "AVERTISSEMENT"
+        $routing.Detail = "Aucune cible definie pour le traceroute"
+        return $routing
+    }
+
+    if (-not (Get-Command tracert.exe -ErrorAction SilentlyContinue)) {
+        $routing.Status = "AVERTISSEMENT"
+        $routing.Detail = "Commande tracert indisponible"
+        return $routing
+    }
+
+    try {
+        $traceLines = & tracert.exe -d -h $MaxHops -w 600 $TraceTarget 2>$null
+        $cleanLines = @($traceLines | Where-Object { $_ -and $_.Trim() -ne "" })
+        $routing.TraceSummary = @($cleanLines | Select-Object -First 12)
+
+        $hasCompleted = @($cleanLines | Where-Object { $_ -match "Trace complete" -or $_ -match "Tracage termine" }).Count -gt 0
+        if ($hasCompleted -and $routing.NextHopReachable) {
+            $routing.Status = "OK"
+            $routing.Detail = "Route par defaut presente, passerelle joignable, traceroute termine"
+        }
+        elseif ($routing.NextHopReachable) {
+            $routing.Status = "AVERTISSEMENT"
+            $routing.Detail = "Passerelle joignable mais traceroute incomplet ou cible distante filtree"
+        }
+        else {
+            $routing.Status = "ECHEC"
+            $routing.Detail = "Passerelle non joignable ou routage degrade"
+        }
+    }
+    catch {
+        if ($routing.NextHopReachable) {
+            $routing.Status = "AVERTISSEMENT"
+            $routing.Detail = "Impossible d'executer le traceroute complet"
+        }
+        else {
+            $routing.Status = "ECHEC"
+            $routing.Detail = "Passerelle non joignable et traceroute indisponible"
+        }
+    }
+
+    return $routing
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -289,10 +381,13 @@ else {
     $DnsServer
 }
 $dnsResolutionDiagnostic = Get-DnsResolutionDiagnostic -DnsServer $effectiveDnsServer -Domains $DnsTestDomains
+$routingDiagnostic = Get-RoutingDiagnostic -Gateway $gateway -TraceTarget $RoutingTraceTarget -MaxHops $TraceMaxHops
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
 $diagnosticResult.Parameters.DnsTestDomains = @($DnsTestDomains)
+$diagnosticResult.Parameters.RoutingTraceTarget = $RoutingTraceTarget
+$diagnosticResult.Parameters.TraceMaxHops = $TraceMaxHops
 $diagnosticResult.Network.LocalIPv4 = $localIp
 $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
@@ -308,6 +403,7 @@ $diagnosticResult.Network.LinkSpeed = $linkSpeed
 $diagnosticResult.Network.InterfaceAlias = $interfaceAlias
 $diagnosticResult.Network.InterfaceStatus = $interfaceStatus
 $diagnosticResult.Dns = $dnsResolutionDiagnostic
+$diagnosticResult.Routing = $routingDiagnostic
 
 # Fonction utilitaire de test ping
 function Test-NetworkTarget {
@@ -409,6 +505,24 @@ $dnsResolutionTest = [PSCustomObject]@{
 Write-Host "$($dnsResolutionTest.Statut) - $($dnsResolutionTest.Detail)"
 $diagnosticResult.Tests += $dnsResolutionTest
 
+Write-Host "`n[7] Test routage :" -ForegroundColor Yellow
+$routingTest = [PSCustomObject]@{
+    Test              = "Routing"
+    Cible             = $RoutingTraceTarget
+    Statut            = $routingDiagnostic.Status
+    Detail            = $routingDiagnostic.Detail
+    AttemptCount      = 1
+    SuccessCount      = if ($routingDiagnostic.Status -eq "OK") { 1 } else { 0 }
+    PacketLossPercent = $null
+    AverageLatencyMs  = $null
+    MaxLatencyMs      = $null
+}
+Write-Host "$($routingTest.Statut) - $($routingTest.Detail)"
+Write-Host "Route defaut : $($routingDiagnostic.DefaultRoute)"
+Write-Host "Interface route : $($routingDiagnostic.InterfaceAlias)"
+Write-Host "Passerelle joignable : $(if ($routingDiagnostic.NextHopReachable) { 'Oui' } else { 'Non' })"
+$diagnosticResult.Tests += $routingTest
+
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
 $diagnosticResult.Summary.WarningCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
@@ -441,6 +555,7 @@ $reportLines = @(
     "- $($dnsTest.Test) [$($dnsTest.Cible)] : $($dnsTest.Statut) - $($dnsTest.Detail)",
     "- $($dhcpTest.Test) [$($dhcpTest.Cible)] : $($dhcpTest.Statut) - $($dhcpTest.Detail)",
     "- $($dnsResolutionTest.Test) [$($dnsResolutionTest.Cible)] : $($dnsResolutionTest.Statut) - $($dnsResolutionTest.Detail)",
+    "- $($routingTest.Test) [$($routingTest.Cible)] : $($routingTest.Statut) - $($routingTest.Detail)",
     "",
     "[3] DNS resolution details",
     "Serveur teste : $effectiveDnsServer",
@@ -449,19 +564,32 @@ $reportLines = @(
     "Echecs : $($dnsResolutionDiagnostic.FailureCount)",
     "Statut : $($dnsResolutionDiagnostic.Status) - $($dnsResolutionDiagnostic.Detail)",
     "",
-    "[4] Resume",
+    "[4] Routing details",
+    "Cible traceroute : $RoutingTraceTarget",
+    "Route defaut : $($routingDiagnostic.DefaultRoute)",
+    "Interface : $($routingDiagnostic.InterfaceAlias)",
+    "Passerelle joignable : $(if ($routingDiagnostic.NextHopReachable) { 'Oui' } else { 'Non' })",
+    "Statut : $($routingDiagnostic.Status) - $($routingDiagnostic.Detail)",
+    "",
+    "[5] Resume",
     "Etat global : $overallStatus",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
-    "[5] ipconfig /all",
+    "[6] ipconfig /all",
     ""
 )
 
 foreach ($entry in $dnsResolutionDiagnostic.Entries) {
     $ipValue = if (@($entry.IpAddresses).Count -gt 0) { @($entry.IpAddresses) -join ", " } else { "N/A" }
     $reportLines += "- $($entry.Domain) : $($entry.Status) - $($entry.Detail) - Latence $($entry.LatencyMs) ms - IP $ipValue"
+}
+
+if (@($routingDiagnostic.TraceSummary).Count -gt 0) {
+    $reportLines += ""
+    $reportLines += "[Traceroute extrait]"
+    $reportLines += @($routingDiagnostic.TraceSummary)
 }
 
 $stopwatch.Stop()
@@ -472,6 +600,6 @@ $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 
-Write-Host "`n[7] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-Host "`n[8] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
