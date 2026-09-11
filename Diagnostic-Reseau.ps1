@@ -132,6 +132,18 @@ function New-DiagnosticResult {
             Status           = "INCONNU"
             Detail           = "Test de debit non lance"
         }
+        Analysis   = [PSCustomObject]@{
+            Findings         = @()
+            Recommendations  = @()
+            Status           = "INCONNU"
+            Detail           = "Analyse non lancee"
+        }
+        Score      = [PSCustomObject]@{
+            Value            = $null
+            Max              = 100
+            Method           = "v1"
+            Level            = "INCONNU"
+        }
         Tests      = @()
         Summary    = [PSCustomObject]@{
             SuccessCount = 0
@@ -772,6 +784,99 @@ function Invoke-BandwidthDiagnostic {
     return $bandwidth
 }
 
+function Get-DiagnosticAnalysis {
+    param(
+        [PSCustomObject]$ResultObject
+    )
+
+    $analysis = [PSCustomObject]@{
+        Findings        = @()
+        Recommendations = @()
+        Status          = "HEALTHY"
+        Detail          = "Aucun incident critique detecte"
+    }
+
+    foreach ($test in $ResultObject.Tests) {
+        if ($test.Statut -eq "ECHEC") {
+            $analysis.Findings += "ECHEC - $($test.Test): $($test.Detail)"
+        }
+        elseif ($test.Statut -eq "AVERTISSEMENT") {
+            $analysis.Findings += "AVERTISSEMENT - $($test.Test): $($test.Detail)"
+        }
+    }
+
+    if ($ResultObject.Network.IsApipa) {
+        $analysis.Recommendations += "Renouveler le bail DHCP (ipconfig /release puis /renew) et verifier le serveur DHCP."
+    }
+
+    if ($ResultObject.Routing.NextHopReachable -eq $false) {
+        $analysis.Recommendations += "Verifier la passerelle par defaut, le cablage et le VLAN du poste."
+    }
+
+    if ($ResultObject.Dns.FailureCount -gt 0) {
+        $analysis.Recommendations += "Verifier la disponibilite des serveurs DNS et la resolution des domaines internes."
+    }
+
+    if ($ResultObject.Ports.ClosedCount -gt 0) {
+        $analysis.Recommendations += "Verifier les pare-feux et l'accessibilite des services TCP attendus."
+    }
+
+    if ($ResultObject.Wifi.Status -eq "AVERTISSEMENT" -and $ResultObject.Wifi.SignalPercent -ne $null -and $ResultObject.Wifi.SignalPercent -lt 40) {
+        $analysis.Recommendations += "Ameliorer la qualite du signal Wi-Fi (position, canal, borne)."
+    }
+
+    if ($ResultObject.LoadTest.Status -eq "AVERTISSEMENT" -or $ResultObject.LoadTest.Status -eq "ECHEC") {
+        $analysis.Recommendations += "Investiguer la congestion reseau: latence degradee detectee sous charge controlee."
+    }
+
+    if ($analysis.Recommendations.Count -eq 0) {
+        $analysis.Recommendations += "Aucune action immediate requise."
+    }
+
+    $hasError = @($ResultObject.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count -gt 0
+    $hasWarning = @($ResultObject.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count -gt 0
+    if ($hasError) {
+        $analysis.Status = "CRITICAL"
+        $analysis.Detail = "Au moins un test critique est en echec"
+    }
+    elseif ($hasWarning) {
+        $analysis.Status = "WARNING"
+        $analysis.Detail = "Des avertissements necessitent verification"
+    }
+
+    return $analysis
+}
+
+function Get-DiagnosticScore {
+    param(
+        [PSCustomObject]$ResultObject
+    )
+
+    $score = 100
+    $score -= (@($ResultObject.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count * 20)
+    $score -= (@($ResultObject.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count * 8)
+
+    if ($ResultObject.LoadTest.Status -eq "ECHEC") { $score -= 10 }
+    elseif ($ResultObject.LoadTest.Status -eq "AVERTISSEMENT") { $score -= 5 }
+
+    if ($score -lt 0) { $score = 0 }
+    if ($score -gt 100) { $score = 100 }
+
+    $errorCount = @($ResultObject.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
+    $warningCount = @($ResultObject.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
+
+    $level = "HEALTHY"
+    if ($errorCount -gt 0 -or $score -lt 50) { $level = "CRITICAL" }
+    elseif ($warningCount -gt 0 -or $score -lt 80) { $level = "WARNING" }
+
+    return [PSCustomObject]@{
+        Value  = $score
+        Max    = 100
+        Method = "v1"
+        Level  = $level
+    }
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -1044,7 +1149,20 @@ $diagnosticResult.Tests += $bandwidthTest
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
 $diagnosticResult.Summary.WarningCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
-$overallStatus = Get-OverallStatus -Summary $diagnosticResult.Summary
+$analysisResult = Get-DiagnosticAnalysis -ResultObject $diagnosticResult
+$scoreResult = Get-DiagnosticScore -ResultObject $diagnosticResult
+$diagnosticResult.Analysis = $analysisResult
+$diagnosticResult.Score = $scoreResult
+$overallStatus = $analysisResult.Status
+
+Write-Host "`n=== DIAGNOSTIC FINAL ===" -ForegroundColor Cyan
+Write-Host "Etat global : $overallStatus"
+Write-Host "Score : $($scoreResult.Value)/$($scoreResult.Max) ($($scoreResult.Level))"
+Write-Host "Succes : $($diagnosticResult.Summary.SuccessCount) | Avertissements : $($diagnosticResult.Summary.WarningCount) | Echecs : $($diagnosticResult.Summary.FailureCount)"
+Write-Host "Analyse : $($analysisResult.Detail)"
+if (@($analysisResult.Recommendations).Count -gt 0) {
+    Write-Host "Recommandation principale : $($analysisResult.Recommendations[0])"
+}
 
 # Construction du rapport
 $reportLines = @(
@@ -1131,11 +1249,16 @@ $reportLines = @(
     "",
     "[9] Resume",
     "Etat global : $overallStatus",
+    "Score : $($scoreResult.Value)/$($scoreResult.Max) ($($scoreResult.Level))",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
-    "[10] ipconfig /all",
+    "[10] Analyse",
+    "Statut analyse : $($analysisResult.Status)",
+    "Detail : $($analysisResult.Detail)",
+    "",
+    "[11] ipconfig /all",
     ""
 )
 
@@ -1156,6 +1279,18 @@ if (@($tcpPortDiagnostic.Entries).Count -gt 0) {
     foreach ($entry in $tcpPortDiagnostic.Entries) {
         $reportLines += "- $($entry.Service) $($entry.Port): $($entry.Status) - $($entry.Detail) - $($entry.LatencyMs) ms"
     }
+}
+
+if (@($analysisResult.Findings).Count -gt 0) {
+    $reportLines += ""
+    $reportLines += "[Findings]"
+    $reportLines += @($analysisResult.Findings)
+}
+
+if (@($analysisResult.Recommendations).Count -gt 0) {
+    $reportLines += ""
+    $reportLines += "[Recommendations]"
+    $reportLines += @($analysisResult.Recommendations)
 }
 
 $stopwatch.Stop()
