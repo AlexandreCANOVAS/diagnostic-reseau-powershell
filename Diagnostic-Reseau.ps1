@@ -44,6 +44,10 @@ function New-DiagnosticResult {
             Gateway         = "Non detectee"
             DnsServers      = @()
             DhcpEnabled     = "Inconnu"
+            DhcpServer      = "Non detecte"
+            DhcpLeaseStart  = $null
+            DhcpLeaseEnd    = $null
+            IsApipa         = $false
             MacAddress      = "Non detectee"
             LinkSpeed       = "Non detectee"
             InterfaceAlias  = "Non detectee"
@@ -96,6 +100,70 @@ function Get-OverallStatus {
     return "HEALTHY"
 }
 
+function Get-DhcpDiagnostic {
+    param(
+        [int]$InterfaceIndex,
+        [string]$LocalIPv4,
+        [string]$FallbackDhcpEnabled
+    )
+
+    $dhcpInfo = [PSCustomObject]@{
+        Enabled      = $FallbackDhcpEnabled
+        Server       = "Non detecte"
+        LeaseStart   = $null
+        LeaseEnd     = $null
+        IsApipa      = $false
+        TestStatus   = "AVERTISSEMENT"
+        TestDetail   = "Etat DHCP non determine"
+        Source       = "Fallback"
+    }
+
+    if ($LocalIPv4 -like "169.254.*") {
+        $dhcpInfo.IsApipa = $true
+    }
+
+    if ($InterfaceIndex -lt 0) {
+        return $dhcpInfo
+    }
+
+    try {
+        $adapterConfig = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "InterfaceIndex = $InterfaceIndex"
+        if ($adapterConfig) {
+            $dhcpInfo.Source = "CIM"
+            $dhcpInfo.Enabled = [string]$adapterConfig.DHCPEnabled
+            $dhcpInfo.Server = if ($adapterConfig.DHCPServer) { $adapterConfig.DHCPServer } else { "Non detecte" }
+            $dhcpInfo.LeaseStart = $adapterConfig.DHCPLeaseObtained
+            $dhcpInfo.LeaseEnd = $adapterConfig.DHCPLeaseExpires
+        }
+    }
+    catch {
+        $null = $null
+    }
+
+    if ($dhcpInfo.IsApipa) {
+        $dhcpInfo.TestStatus = "ECHEC"
+        $dhcpInfo.TestDetail = "APIPA detectee (169.254.x.x) - attribution DHCP probablement en echec"
+        return $dhcpInfo
+    }
+
+    if ($dhcpInfo.Enabled -eq "True" -or $dhcpInfo.Enabled -eq "Enabled") {
+        if ($dhcpInfo.Server -eq "Non detecte") {
+            $dhcpInfo.TestStatus = "AVERTISSEMENT"
+            $dhcpInfo.TestDetail = "DHCP actif mais serveur DHCP non detecte"
+        }
+        else {
+            $dhcpInfo.TestStatus = "OK"
+            $dhcpInfo.TestDetail = "DHCP actif - serveur $($dhcpInfo.Server)"
+        }
+    }
+    else {
+        $dhcpInfo.TestStatus = "AVERTISSEMENT"
+        $dhcpInfo.TestDetail = "DHCP desactive (configuration IP statique possible)"
+    }
+
+    return $dhcpInfo
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -113,10 +181,12 @@ $subnetMask = if ($prefixLength -ne $null) { Convert-PrefixLengthToSubnetMask -P
 $gateway = if ($activeConfig -and $activeConfig.IPv4DefaultGateway) { $activeConfig.IPv4DefaultGateway.NextHop } else { "Non detectee" }
 $dnsServers = if ($activeConfig -and $activeConfig.DNSServer -and $activeConfig.DNSServer.ServerAddresses) { @($activeConfig.DNSServer.ServerAddresses) } else { @() }
 $dhcpEnabled = if ($activeConfig -and $activeConfig.NetIPv4Interface) { [string]$activeConfig.NetIPv4Interface.Dhcp } else { "Inconnu" }
+$interfaceIndex = if ($activeConfig) { [int]$activeConfig.InterfaceIndex } else { -1 }
 $macAddress = if ($activeConfig -and $activeConfig.NetAdapter) { $activeConfig.NetAdapter.MacAddress } else { "Non detectee" }
 $linkSpeed = if ($activeConfig -and $activeConfig.NetAdapter) { [string]$activeConfig.NetAdapter.LinkSpeed } else { "Non detectee" }
 $interfaceAlias = if ($activeConfig) { $activeConfig.InterfaceAlias } else { "Non detectee" }
 $interfaceStatus = if ($activeConfig -and $activeConfig.NetAdapter) { $activeConfig.NetAdapter.Status } else { "Non detectee" }
+$dhcpDiagnostic = Get-DhcpDiagnostic -InterfaceIndex $interfaceIndex -LocalIPv4 $localIp -FallbackDhcpEnabled $dhcpEnabled
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
@@ -125,7 +195,11 @@ $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
 $diagnosticResult.Network.Gateway = $gateway
 $diagnosticResult.Network.DnsServers = $dnsServers
-$diagnosticResult.Network.DhcpEnabled = $dhcpEnabled
+$diagnosticResult.Network.DhcpEnabled = $dhcpDiagnostic.Enabled
+$diagnosticResult.Network.DhcpServer = $dhcpDiagnostic.Server
+$diagnosticResult.Network.DhcpLeaseStart = $dhcpDiagnostic.LeaseStart
+$diagnosticResult.Network.DhcpLeaseEnd = $dhcpDiagnostic.LeaseEnd
+$diagnosticResult.Network.IsApipa = $dhcpDiagnostic.IsApipa
 $diagnosticResult.Network.MacAddress = $macAddress
 $diagnosticResult.Network.LinkSpeed = $linkSpeed
 $diagnosticResult.Network.InterfaceAlias = $interfaceAlias
@@ -182,7 +256,8 @@ Write-Host "Masque : $subnetMask"
 Write-Host "Passerelle : $gateway"
 Write-Host "Interface : $interfaceAlias ($interfaceStatus)"
 Write-Host "Vitesse lien : $linkSpeed"
-Write-Host "DHCP : $dhcpEnabled"
+Write-Host "DHCP : $($dhcpDiagnostic.Enabled)"
+Write-Host "Serveur DHCP : $($dhcpDiagnostic.Server)"
 Write-Host "DNS detectes : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non detectes' })"
 
 Write-Host "`n[2] Test connexion Internet ($InternetHost) :" -ForegroundColor Yellow
@@ -199,6 +274,21 @@ Write-Host "`n[4] Test DNS ($DnsServer) :" -ForegroundColor Yellow
 $dnsTest = Test-NetworkTarget -Target $DnsServer -Label "DNS"
 Write-Host "$($dnsTest.Statut) - $($dnsTest.Detail)"
 $diagnosticResult.Tests += $dnsTest
+
+Write-Host "`n[5] Test DHCP :" -ForegroundColor Yellow
+$dhcpTest = [PSCustomObject]@{
+    Test              = "DHCP"
+    Cible             = $dhcpDiagnostic.Server
+    Statut            = $dhcpDiagnostic.TestStatus
+    Detail            = $dhcpDiagnostic.TestDetail
+    AttemptCount      = 0
+    SuccessCount      = 0
+    PacketLossPercent = $null
+    AverageLatencyMs  = $null
+    MaxLatencyMs      = $null
+}
+Write-Host "$($dhcpTest.Statut) - $($dhcpTest.Detail)"
+$diagnosticResult.Tests += $dhcpTest
 
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
@@ -219,13 +309,18 @@ $reportLines = @(
     "MAC : $macAddress",
     "Vitesse lien : $linkSpeed",
     "Passerelle : $gateway",
-    "DHCP : $dhcpEnabled",
+    "DHCP : $($dhcpDiagnostic.Enabled)",
+    "Serveur DHCP : $($dhcpDiagnostic.Server)",
+    "Bail DHCP debut : $(if ($dhcpDiagnostic.LeaseStart) { $dhcpDiagnostic.LeaseStart } else { 'Non detecte' })",
+    "Bail DHCP fin : $(if ($dhcpDiagnostic.LeaseEnd) { $dhcpDiagnostic.LeaseEnd } else { 'Non detecte' })",
+    "APIPA : $(if ($dhcpDiagnostic.IsApipa) { 'Oui' } else { 'Non' })",
     "DNS detectes : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non detectes' })",
     "",
     "[2] Resultats des tests",
     "- $($internetTest.Test) [$($internetTest.Cible)] : $($internetTest.Statut) - $($internetTest.Detail)",
     "- $($gatewayTest.Test) [$($gatewayTest.Cible)] : $($gatewayTest.Statut) - $($gatewayTest.Detail)",
     "- $($dnsTest.Test) [$($dnsTest.Cible)] : $($dnsTest.Statut) - $($dnsTest.Detail)",
+    "- $($dhcpTest.Test) [$($dhcpTest.Cible)] : $($dhcpTest.Statut) - $($dhcpTest.Detail)",
     "",
     "[3] Resume",
     "Etat global : $overallStatus",
@@ -239,12 +334,12 @@ $reportLines = @(
 
 $stopwatch.Stop()
 $diagnosticResult.Metadata.DurationMs = $stopwatch.ElapsedMilliseconds
-$diagnosticResult | Add-Member -MemberType NoteProperty -Name OverallStatus -Value $overallStatus
+$diagnosticResult | Add-Member -MemberType NoteProperty -Name OverallStatus -Value $overallStatus -Force
 
 $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 
-Write-Host "`n[5] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-Host "`n[6] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
