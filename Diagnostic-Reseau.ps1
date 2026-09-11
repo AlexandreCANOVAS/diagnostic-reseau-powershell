@@ -10,6 +10,7 @@ param(
     [string]$TcpTarget = "google.com",
     [int[]]$TcpPorts = @(80, 443, 445, 3389),
     [ValidateRange(300, 5000)][int]$TcpTimeoutMs = 1200,
+    [switch]$IncludeWifiScan,
     [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
@@ -86,6 +87,20 @@ function New-DiagnosticResult {
             ClosedCount  = 0
             Status       = "INCONNU"
             Detail       = "Diagnostic ports TCP non lance"
+        }
+        Wifi       = [PSCustomObject]@{
+            Available      = $false
+            InterfaceName  = "Non detectee"
+            Ssid           = "N/A"
+            Bssid          = "N/A"
+            RadioType      = "N/A"
+            Channel        = "N/A"
+            SignalPercent  = $null
+            ReceiveRateMbps = $null
+            TransmitRateMbps = $null
+            Status         = "INCONNU"
+            Detail         = "Diagnostic Wi-Fi non lance"
+            NearbyCount    = $null
         }
         Tests      = @()
         Summary    = [PSCustomObject]@{
@@ -477,6 +492,78 @@ function Get-TcpPortDiagnostics {
     return $result
 }
 
+function Get-WifiDiagnostics {
+    param(
+        [switch]$IncludeScan
+    )
+
+    $wifi = [PSCustomObject]@{
+        Available        = $false
+        InterfaceName    = "Non detectee"
+        Ssid             = "N/A"
+        Bssid            = "N/A"
+        RadioType        = "N/A"
+        Channel          = "N/A"
+        SignalPercent    = $null
+        ReceiveRateMbps  = $null
+        TransmitRateMbps = $null
+        Status           = "AVERTISSEMENT"
+        Detail           = "Aucune interface Wi-Fi active detectee"
+        NearbyCount      = $null
+    }
+
+    if (-not (Get-Command netsh.exe -ErrorAction SilentlyContinue)) {
+        $wifi.Status = "AVERTISSEMENT"
+        $wifi.Detail = "Commande netsh indisponible pour le diagnostic Wi-Fi"
+        return $wifi
+    }
+
+    $interfaceLines = @(& netsh.exe wlan show interfaces 2>$null)
+    if (@($interfaceLines | Where-Object { $_ -match "There is no wireless interface on the system|Aucune interface sans fil" }).Count -gt 0) {
+        return $wifi
+    }
+
+    foreach ($line in $interfaceLines) {
+        if ($line -match "^\s*Name\s*:\s*(.+)$") { $wifi.InterfaceName = $matches[1].Trim(); continue }
+        if ($line -match "^\s*SSID\s*:\s*(.+)$" -and $line -notmatch "BSSID") { $wifi.Ssid = $matches[1].Trim(); continue }
+        if ($line -match "^\s*BSSID\s*:\s*(.+)$") { $wifi.Bssid = $matches[1].Trim(); continue }
+        if ($line -match "^\s*Radio type\s*:\s*(.+)$") { $wifi.RadioType = $matches[1].Trim(); continue }
+        if ($line -match "^\s*Channel\s*:\s*(.+)$") { $wifi.Channel = $matches[1].Trim(); continue }
+        if ($line -match "^\s*Signal\s*:\s*(\d+)%") { $wifi.SignalPercent = [int]$matches[1]; continue }
+        if ($line -match "^\s*Receive rate \(Mbps\)\s*:\s*(\d+)") { $wifi.ReceiveRateMbps = [int]$matches[1]; continue }
+        if ($line -match "^\s*Transmit rate \(Mbps\)\s*:\s*(\d+)") { $wifi.TransmitRateMbps = [int]$matches[1]; continue }
+    }
+
+    if ($wifi.InterfaceName -ne "Non detectee") {
+        $wifi.Available = $true
+    }
+
+    if ($IncludeScan -and $wifi.Available) {
+        $networkLines = @(& netsh.exe wlan show networks mode=bssid 2>$null)
+        $ssidCount = @($networkLines | Where-Object { $_ -match "^\s*SSID\s+\d+\s*:" }).Count
+        $wifi.NearbyCount = $ssidCount
+    }
+
+    if (-not $wifi.Available) {
+        $wifi.Status = "AVERTISSEMENT"
+        $wifi.Detail = "Aucune interface Wi-Fi detectee"
+    }
+    elseif ($wifi.Ssid -eq "" -or $wifi.Ssid -eq "N/A") {
+        $wifi.Status = "AVERTISSEMENT"
+        $wifi.Detail = "Interface Wi-Fi presente mais non connectee"
+    }
+    elseif ($wifi.SignalPercent -lt 40) {
+        $wifi.Status = "AVERTISSEMENT"
+        $wifi.Detail = "Wi-Fi connecte mais signal faible"
+    }
+    else {
+        $wifi.Status = "OK"
+        $wifi.Detail = "Wi-Fi connecte et signal correct"
+    }
+
+    return $wifi
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -510,6 +597,7 @@ $dnsResolutionDiagnostic = Get-DnsResolutionDiagnostic -DnsServer $effectiveDnsS
 $routingDiagnostic = Get-RoutingDiagnostic -Gateway $gateway -TraceTarget $RoutingTraceTarget -MaxHops $TraceMaxHops
 $effectiveTcpTarget = if ([string]::IsNullOrWhiteSpace($TcpTarget)) { $InternetHost } else { $TcpTarget }
 $tcpPortDiagnostic = Get-TcpPortDiagnostics -Target $effectiveTcpTarget -Ports $TcpPorts -TimeoutMs $TcpTimeoutMs
+$wifiDiagnostic = Get-WifiDiagnostics -IncludeScan:$IncludeWifiScan
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
@@ -519,6 +607,7 @@ $diagnosticResult.Parameters.TraceMaxHops = $TraceMaxHops
 $diagnosticResult.Parameters.TcpTarget = $effectiveTcpTarget
 $diagnosticResult.Parameters.TcpPorts = @($TcpPorts)
 $diagnosticResult.Parameters.TcpTimeoutMs = $TcpTimeoutMs
+$diagnosticResult.Parameters.IncludeWifiScan = [bool]$IncludeWifiScan
 $diagnosticResult.Network.LocalIPv4 = $localIp
 $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
@@ -536,6 +625,7 @@ $diagnosticResult.Network.InterfaceStatus = $interfaceStatus
 $diagnosticResult.Dns = $dnsResolutionDiagnostic
 $diagnosticResult.Routing = $routingDiagnostic
 $diagnosticResult.Ports = $tcpPortDiagnostic
+$diagnosticResult.Wifi = $wifiDiagnostic
 
 # Fonction utilitaire de test ping
 function Test-NetworkTarget {
@@ -673,6 +763,25 @@ $tcpPortTest = [PSCustomObject]@{
 Write-Host "$($tcpPortTest.Statut) - $($tcpPortTest.Detail)"
 $diagnosticResult.Tests += $tcpPortTest
 
+Write-Host "`n[9] Test Wi-Fi :" -ForegroundColor Yellow
+$wifiTest = [PSCustomObject]@{
+    Test              = "Wi-Fi"
+    Cible             = $wifiDiagnostic.InterfaceName
+    Statut            = $wifiDiagnostic.Status
+    Detail            = $wifiDiagnostic.Detail
+    AttemptCount      = 1
+    SuccessCount      = if ($wifiDiagnostic.Status -eq "OK") { 1 } else { 0 }
+    PacketLossPercent = $null
+    AverageLatencyMs  = $null
+    MaxLatencyMs      = $null
+}
+Write-Host "$($wifiTest.Statut) - $($wifiTest.Detail)"
+Write-Host "Interface Wi-Fi : $($wifiDiagnostic.InterfaceName)"
+Write-Host "SSID : $($wifiDiagnostic.Ssid)"
+Write-Host "Signal : $(if ($wifiDiagnostic.SignalPercent -ne $null) { "$($wifiDiagnostic.SignalPercent)%" } else { 'N/A' })"
+Write-Host "Canal : $($wifiDiagnostic.Channel)"
+$diagnosticResult.Tests += $wifiTest
+
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
 $diagnosticResult.Summary.WarningCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
@@ -707,6 +816,7 @@ $reportLines = @(
     "- $($dnsResolutionTest.Test) [$($dnsResolutionTest.Cible)] : $($dnsResolutionTest.Statut) - $($dnsResolutionTest.Detail)",
     "- $($routingTest.Test) [$($routingTest.Cible)] : $($routingTest.Statut) - $($routingTest.Detail)",
     "- $($tcpPortTest.Test) [$($tcpPortTest.Cible)] : $($tcpPortTest.Statut) - $($tcpPortTest.Detail)",
+    "- $($wifiTest.Test) [$($wifiTest.Cible)] : $($wifiTest.Statut) - $($wifiTest.Detail)",
     "",
     "[3] DNS resolution details",
     "Serveur teste : $effectiveDnsServer",
@@ -729,13 +839,24 @@ $reportLines = @(
     "Fermes : $($tcpPortDiagnostic.ClosedCount)",
     "Statut : $($tcpPortDiagnostic.Status) - $($tcpPortDiagnostic.Detail)",
     "",
-    "[6] Resume",
+    "[6] Wi-Fi details",
+    "Interface : $($wifiDiagnostic.InterfaceName)",
+    "SSID : $($wifiDiagnostic.Ssid)",
+    "BSSID : $($wifiDiagnostic.Bssid)",
+    "Signal : $(if ($wifiDiagnostic.SignalPercent -ne $null) { "$($wifiDiagnostic.SignalPercent)%" } else { 'N/A' })",
+    "Canal : $($wifiDiagnostic.Channel)",
+    "Radio : $($wifiDiagnostic.RadioType)",
+    "Debit RX/TX (Mbps) : $(if ($wifiDiagnostic.ReceiveRateMbps -ne $null -and $wifiDiagnostic.TransmitRateMbps -ne $null) { "$($wifiDiagnostic.ReceiveRateMbps)/$($wifiDiagnostic.TransmitRateMbps)" } else { 'N/A' })",
+    "Reseaux detectes : $(if ($wifiDiagnostic.NearbyCount -ne $null) { $wifiDiagnostic.NearbyCount } else { 'N/A' })",
+    "Statut : $($wifiDiagnostic.Status) - $($wifiDiagnostic.Detail)",
+    "",
+    "[7] Resume",
     "Etat global : $overallStatus",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
-    "[7] ipconfig /all",
+    "[8] ipconfig /all",
     ""
 )
 
@@ -766,6 +887,6 @@ $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 
-Write-Host "`n[9] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-Host "`n[10] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
