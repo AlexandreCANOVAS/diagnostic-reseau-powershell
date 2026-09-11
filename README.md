@@ -1,112 +1,109 @@
-# Network Diagnostic Tool (PowerShell)
+# 🔧 Diagnostic Réseau PowerShell
 
-Outil professionnel de diagnostic réseau Windows pour environnement support IT / GMSI, avec une progression orientée ASR.
+Outil professionnel de diagnostic réseau Windows orienté **support IT / GMSI / L1-L2**.
 
-Le script principal reste:
+Le point d’entrée du projet est :
 
 ```powershell
 .\Diagnostic-Reseau.ps1
 ```
 
-Il produit une vue terminal technicien + des rapports structurés exploitables.
+---
 
-## Objectifs
-- Centraliser les diagnostics réseau dans un seul run.
-- Réutiliser les mêmes résultats pour le terminal, TXT, JSON et dashboard HTML.
-- Diagnostiquer les couches essentielles: connectivité, DHCP, DNS, routage, ports TCP, Wi-Fi, charge contrôlée, débit.
-- Fournir une analyse automatique avec recommandations support.
+## 🎯 Objectif
+- Exécuter un diagnostic réseau complet en une seule commande.
+- Centraliser les résultats dans un modèle structuré unique.
+- Afficher une vue terminal claire + générer des rapports exploitables.
 
-## Fonctionnalités actuelles
-- Collecte configuration IPv4 active (IP, masque, passerelle, DNS, interface, MAC, DHCP, vitesse lien).
+## ✨ Fonctionnalités
+- Configuration réseau IPv4 (IP, masque, passerelle, DNS, MAC, vitesse, interface).
 - Tests de connectivité (Internet, passerelle, DNS).
-- Diagnostic DHCP avancé (serveur, bail, détection APIPA).
-- Diagnostic DNS avancé (résolution multi-domaines, latence par domaine, erreurs détaillées).
-- Diagnostic routage (route par défaut, passerelle joignable, extrait traceroute).
-- Tests TCP ciblés (80/443/445/3389 par défaut, cible configurable, timeout configurable).
-- Diagnostic Wi-Fi (interface, SSID, signal, canal, débit RX/TX, scan optionnel).
-- Test de charge réseau contrôlé (before / under / after avec delta de latence et pertes).
-- Test de débit descendant optionnel (mesure réelle basée sur téléchargement chronométré).
-- Analyse automatique + score réseau.
-- Rapports TXT, JSON et dashboard HTML local.
+- Diagnostic DHCP (serveur, bail, APIPA).
+- Diagnostic DNS avancé (multi-domaines, latence, erreurs).
+- Diagnostic routage (route par défaut, passerelle, traceroute).
+- Tests TCP ciblés (ports configurables, timeout contrôlé).
+- Diagnostic Wi-Fi (SSID, signal, canal, RX/TX, scan optionnel).
+- Test de charge réseau contrôlé (avant / charge / après).
+- Test de débit optionnel (téléchargement chronométré).
+- Analyse automatique + recommandations + score global.
+- Rapports TXT / JSON / HTML (dashboard local).
 
-## Prérequis
+## 🧩 Architecture logique
+```text
+Diagnostic-Reseau.ps1
+  -> Collecte diagnostics
+  -> Résultats structurés
+  -> Analyse + score
+  -> Affichage terminal
+  -> Export TXT / JSON / HTML
+```
+
+## ⚙️ Prérequis
 - Windows 10/11
-- PowerShell 5.1+
-- Accès réseau selon les cibles testées
-- Droits standard (admin non obligatoire pour le mode de base)
+- Windows PowerShell 5.1+
+- Accès réseau selon les tests lancés
+- Droits standard (admin non obligatoire en mode normal)
 
-## Utilisation
+## 🚀 Utilisation
 
 ### Exécution standard
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Diagnostic-Reseau.ps1
 ```
 
-### Exemple avec options
+### Exécution avancée (exemple)
 ```powershell
 .\Diagnostic-Reseau.ps1 `
   -DnsServer "8.8.8.8" `
   -DnsTestDomains "google.com","github.com" `
+  -RoutingTraceTarget "1.1.1.1" `
+  -TraceMaxHops 3 `
   -TcpTarget "google.com" `
-  -TcpPorts 80,443,445,3389 `
+  -TcpPorts 80,443 `
+  -IncludeWifiScan `
   -LoadTestTarget "cloudflare.com" `
   -LoadTestMonitorTarget "8.8.8.8" `
-  -LoadTestDurationSec 6 `
+  -LoadTestSampleCount 3 `
+  -LoadTestDurationSec 3 `
+  -LoadTestParallelStreams 1 `
   -EnableBandwidthTest `
   -OpenDashboard
 ```
 
-## Paramètres principaux
-- `DnsServer`: cible de test DNS ping.
-- `DnsTestDomains`: domaines testés en résolution DNS.
-- `RoutingTraceTarget`: cible traceroute.
-- `TraceMaxHops`: limite de sauts traceroute.
-- `TcpTarget`: hôte cible pour tests ports TCP.
-- `TcpPorts`: liste de ports TCP autorisés explicitement.
-- `TcpTimeoutMs`: timeout par tentative TCP.
-- `IncludeWifiScan`: active le scan nearby Wi-Fi.
-- `LoadTestTarget`: cible génératrice de charge contrôlée.
-- `LoadTestMonitorTarget`: cible mesurée pour latence/pertes.
-- `LoadTestSampleCount`, `LoadTestDurationSec`, `LoadTestParallelStreams`: contrôle du test de charge.
-- `EnableBandwidthTest`: active la mesure de débit.
-- `BandwidthTestUrl`, `BandwidthTimeoutSec`: contrôle du test de débit.
-- `GenerateDashboard`: active la génération HTML.
-- `OpenDashboard`: ouvre automatiquement le dashboard.
+## 🛠️ Paramètres principaux
+- `DnsServer`, `DnsTestDomains`
+- `RoutingTraceTarget`, `TraceMaxHops`
+- `TcpTarget`, `TcpPorts`, `TcpTimeoutMs`
+- `IncludeWifiScan`
+- `LoadTestTarget`, `LoadTestMonitorTarget`
+- `LoadTestSampleCount`, `LoadTestDurationSec`, `LoadTestParallelStreams`
+- `EnableBandwidthTest`, `BandwidthTestUrl`, `BandwidthTimeoutSec`
+- `GenerateDashboard`, `OpenDashboard`
 
-## Rapports générés
-Le script génère des fichiers horodatés:
+## 📄 Rapports générés
 - `diagnostic_yyyy-MM-dd_HH-mm.txt`
 - `diagnostic_yyyy-MM-dd_HH-mm.json`
 - `diagnostic_yyyy-MM-dd_HH-mm.html`
 
-Le JSON est la source structurée principale pour les futures évolutions.
+Le **JSON** est la source structurée principale pour l’analyse et le dashboard.
 
-## Architecture logique
-```text
-Diagnostic-Reseau.ps1
-  -> Collecte diagnostics
-  -> Resultats structures
-  -> Analyse + score
-  -> Affichage terminal
-  -> Export TXT / JSON / HTML
-```
+## 🧪 Statuts
+- `OK` : fonctionnement normal
+- `AVERTISSEMENT` : vérification recommandée
+- `ECHEC / CRITICAL` : incident à traiter
+- `N/A` : non applicable / indisponible
 
-## Sécurité et limites
-- Aucun scan agressif.
+## 🔐 Sécurité & limites
+- Pas de scan agressif.
 - Test de charge limité et contrôlé.
 - Pas de secrets stockés.
-- Les résultats dépendent de la connectivité réelle, des firewalls et des politiques réseau.
+- Les résultats dépendent de l’état réseau au moment du test.
 
-## Roadmap (prochaines étapes)
-- Modularisation progressive en modules PowerShell (`Modules/`).
-- Dashboard HTML enrichi (KPI/graphes supplémentaires).
-- Tests automatisés Pester.
-- Documentation d’exploitation et troubleshooting avancé.
-
-## Documentation
+## 📚 Documentation
 - Guide utilisateur : `README.md`
 - Guide technicien L1/L2 : `Docs/Guide-Technicien.md`
 - Changelog : `CHANGELOG.md`
 
-## Exemple
-![Exemple de sortie du script](./Assets/Network%20Diagnostic%20Tool.png)
+## 🖼️ Exemples
+![Exemple sortie terminal](./Assets/Outil%20diagnostic%20r%C3%A9seau.png)
+![Exemple dashboard web](./Assets/Page%20web%20diagnostic.png)
