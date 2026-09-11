@@ -26,13 +26,39 @@ param(
 
 $ErrorActionPreference = "SilentlyContinue"
 
-Write-Host "=== DIAGNOSTIC RESEAU ===" -ForegroundColor Cyan
-
 # Nom du rapport horodaté
 $date = Get-Date -Format "yyyy-MM-dd_HH-mm"
 $reportFile = Join-Path -Path $PSScriptRoot -ChildPath "diagnostic_$date.txt"
 $jsonReportFile = Join-Path -Path $PSScriptRoot -ChildPath "diagnostic_$date.json"
 $htmlReportFile = Join-Path -Path $PSScriptRoot -ChildPath "diagnostic_$date.html"
+
+function Write-UiBanner {
+    Write-Host "============================================================" -ForegroundColor DarkCyan
+    Write-Host "                 NETWORK DIAGNOSTIC TOOL                    " -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor DarkCyan
+}
+
+function Write-UiSection {
+    param([string]$Title)
+    Write-Host ""
+    Write-Host ("--- {0} ---" -f $Title) -ForegroundColor Yellow
+}
+
+function Write-TestResultLine {
+    param(
+        [string]$Status,
+        [string]$Detail
+    )
+
+    switch ($Status) {
+        "OK" { Write-Host "$Status - $Detail" -ForegroundColor Green }
+        "ECHEC" { Write-Host "$Status - $Detail" -ForegroundColor Red }
+        "AVERTISSEMENT" { Write-Host "$Status - $Detail" -ForegroundColor Yellow }
+        default { Write-Host "$Status - $Detail" -ForegroundColor Gray }
+    }
+}
+
+Write-UiBanner
 
 function New-DiagnosticResult {
     param(
@@ -1118,7 +1144,7 @@ function Test-NetworkTarget {
     }
 }
 
-Write-Host "`n[1] Adresse IP locale :" -ForegroundColor Yellow
+Write-UiSection -Title "[1] Configuration locale"
 Write-Host "IP : $localIp"
 Write-Host "Masque : $subnetMask"
 Write-Host "Passerelle : $gateway"
@@ -1128,22 +1154,22 @@ Write-Host "DHCP : $($dhcpDiagnostic.Enabled)"
 Write-Host "Serveur DHCP : $($dhcpDiagnostic.Server)"
 Write-Host "DNS detectes : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non detectes' })"
 
-Write-Host "`n[2] Test connexion Internet ($InternetHost) :" -ForegroundColor Yellow
+Write-UiSection -Title "[2] Test connexion Internet ($InternetHost)"
 $internetTest = Test-NetworkTarget -Target $InternetHost -Label "Connexion Internet"
-Write-Host "$($internetTest.Statut) - $($internetTest.Detail)"
+Write-TestResultLine -Status $internetTest.Statut -Detail $internetTest.Detail
 $diagnosticResult.Tests += $internetTest
 
-Write-Host "`n[3] Test passerelle ($gateway) :" -ForegroundColor Yellow
+Write-UiSection -Title "[3] Test passerelle ($gateway)"
 $gatewayTest = Test-NetworkTarget -Target $gateway -Label "Passerelle"
-Write-Host "$($gatewayTest.Statut) - $($gatewayTest.Detail)"
+Write-TestResultLine -Status $gatewayTest.Statut -Detail $gatewayTest.Detail
 $diagnosticResult.Tests += $gatewayTest
 
-Write-Host "`n[4] Test DNS ($effectiveDnsServer) :" -ForegroundColor Yellow
+Write-UiSection -Title "[4] Test DNS ($effectiveDnsServer)"
 $dnsTest = Test-NetworkTarget -Target $effectiveDnsServer -Label "DNS"
-Write-Host "$($dnsTest.Statut) - $($dnsTest.Detail)"
+Write-TestResultLine -Status $dnsTest.Statut -Detail $dnsTest.Detail
 $diagnosticResult.Tests += $dnsTest
 
-Write-Host "`n[5] Test DHCP :" -ForegroundColor Yellow
+Write-UiSection -Title "[5] Test DHCP"
 $dhcpTest = [PSCustomObject]@{
     Test              = "DHCP"
     Cible             = $dhcpDiagnostic.Server
@@ -1155,10 +1181,10 @@ $dhcpTest = [PSCustomObject]@{
     AverageLatencyMs  = $null
     MaxLatencyMs      = $null
 }
-Write-Host "$($dhcpTest.Statut) - $($dhcpTest.Detail)"
+Write-TestResultLine -Status $dhcpTest.Statut -Detail $dhcpTest.Detail
 $diagnosticResult.Tests += $dhcpTest
 
-Write-Host "`n[6] Test resolution DNS :" -ForegroundColor Yellow
+Write-UiSection -Title "[6] Test resolution DNS"
 $dnsResolutionTest = [PSCustomObject]@{
     Test              = "DNS Resolution"
     Cible             = $effectiveDnsServer
@@ -1170,10 +1196,10 @@ $dnsResolutionTest = [PSCustomObject]@{
     AverageLatencyMs  = $null
     MaxLatencyMs      = $null
 }
-Write-Host "$($dnsResolutionTest.Statut) - $($dnsResolutionTest.Detail)"
+Write-TestResultLine -Status $dnsResolutionTest.Statut -Detail $dnsResolutionTest.Detail
 $diagnosticResult.Tests += $dnsResolutionTest
 
-Write-Host "`n[7] Test routage :" -ForegroundColor Yellow
+Write-UiSection -Title "[7] Test routage"
 $routingTest = [PSCustomObject]@{
     Test              = "Routing"
     Cible             = $RoutingTraceTarget
@@ -1185,13 +1211,13 @@ $routingTest = [PSCustomObject]@{
     AverageLatencyMs  = $null
     MaxLatencyMs      = $null
 }
-Write-Host "$($routingTest.Statut) - $($routingTest.Detail)"
+Write-TestResultLine -Status $routingTest.Statut -Detail $routingTest.Detail
 Write-Host "Route defaut : $($routingDiagnostic.DefaultRoute)"
 Write-Host "Interface route : $($routingDiagnostic.InterfaceAlias)"
 Write-Host "Passerelle joignable : $(if ($routingDiagnostic.NextHopReachable) { 'Oui' } else { 'Non' })"
 $diagnosticResult.Tests += $routingTest
 
-Write-Host "`n[8] Test ports TCP ($effectiveTcpTarget) :" -ForegroundColor Yellow
+Write-UiSection -Title "[8] Test ports TCP ($effectiveTcpTarget)"
 foreach ($entry in $tcpPortDiagnostic.Entries) {
     Write-Host "$($entry.Service) $($entry.Port) : $($entry.Status) ($($entry.LatencyMs) ms)"
 }
@@ -1206,10 +1232,10 @@ $tcpPortTest = [PSCustomObject]@{
     AverageLatencyMs  = if (@($tcpPortDiagnostic.Entries).Count -gt 0) { [Math]::Round((@($tcpPortDiagnostic.Entries | Measure-Object -Property LatencyMs -Average).Average), 2) } else { $null }
     MaxLatencyMs      = if (@($tcpPortDiagnostic.Entries).Count -gt 0) { (@($tcpPortDiagnostic.Entries | Measure-Object -Property LatencyMs -Maximum).Maximum) } else { $null }
 }
-Write-Host "$($tcpPortTest.Statut) - $($tcpPortTest.Detail)"
+Write-TestResultLine -Status $tcpPortTest.Statut -Detail $tcpPortTest.Detail
 $diagnosticResult.Tests += $tcpPortTest
 
-Write-Host "`n[9] Test Wi-Fi :" -ForegroundColor Yellow
+Write-UiSection -Title "[9] Test Wi-Fi"
 $wifiTest = [PSCustomObject]@{
     Test              = "Wi-Fi"
     Cible             = $wifiDiagnostic.InterfaceName
@@ -1221,14 +1247,14 @@ $wifiTest = [PSCustomObject]@{
     AverageLatencyMs  = $null
     MaxLatencyMs      = $null
 }
-Write-Host "$($wifiTest.Statut) - $($wifiTest.Detail)"
+Write-TestResultLine -Status $wifiTest.Statut -Detail $wifiTest.Detail
 Write-Host "Interface Wi-Fi : $($wifiDiagnostic.InterfaceName)"
 Write-Host "SSID : $($wifiDiagnostic.Ssid)"
 Write-Host "Signal : $(if ($wifiDiagnostic.SignalPercent -ne $null) { "$($wifiDiagnostic.SignalPercent)%" } else { 'N/A' })"
 Write-Host "Canal : $($wifiDiagnostic.Channel)"
 $diagnosticResult.Tests += $wifiTest
 
-Write-Host "`n[10] Test charge reseau controlee :" -ForegroundColor Yellow
+Write-UiSection -Title "[10] Test charge reseau controlee"
 $loadTest = [PSCustomObject]@{
     Test              = "Network Load"
     Cible             = "$LoadTestTarget (monitor: $LoadTestMonitorTarget)"
@@ -1240,14 +1266,14 @@ $loadTest = [PSCustomObject]@{
     AverageLatencyMs  = $loadTestResult.UnderLoad.AverageLatencyMs
     MaxLatencyMs      = $loadTestResult.UnderLoad.MaxLatencyMs
 }
-Write-Host "$($loadTest.Statut) - $($loadTest.Detail)"
+Write-TestResultLine -Status $loadTest.Statut -Detail $loadTest.Detail
 Write-Host "Before : avg $($loadTestResult.Before.AverageLatencyMs) ms / loss $($loadTestResult.Before.PacketLossPercent)%"
 Write-Host "Under  : avg $($loadTestResult.UnderLoad.AverageLatencyMs) ms / max $($loadTestResult.UnderLoad.MaxLatencyMs) ms / loss $($loadTestResult.UnderLoad.PacketLossPercent)%"
 Write-Host "After  : avg $($loadTestResult.After.AverageLatencyMs) ms / loss $($loadTestResult.After.PacketLossPercent)%"
 Write-Host "Delta avg/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms"
 $diagnosticResult.Tests += $loadTest
 
-Write-Host "`n[11] Test debit reseau :" -ForegroundColor Yellow
+Write-UiSection -Title "[11] Test debit reseau"
 $bandwidthTest = [PSCustomObject]@{
     Test              = "Bandwidth"
     Cible             = $BandwidthTestUrl
@@ -1260,10 +1286,10 @@ $bandwidthTest = [PSCustomObject]@{
     MaxLatencyMs      = $null
 }
 if ($bandwidthResult.Status -eq "OK") {
-    Write-Host "OK - Download ~ $($bandwidthResult.DownloadMbps) Mbps ($($bandwidthResult.DownloadBytes) octets en $($bandwidthResult.DurationMs) ms)"
+    Write-TestResultLine -Status "OK" -Detail "Download ~ $($bandwidthResult.DownloadMbps) Mbps ($($bandwidthResult.DownloadBytes) octets en $($bandwidthResult.DurationMs) ms)"
 }
 else {
-    Write-Host "$($bandwidthResult.Status) - $($bandwidthResult.Detail)"
+    Write-TestResultLine -Status $bandwidthResult.Status -Detail $bandwidthResult.Detail
 }
 $diagnosticResult.Tests += $bandwidthTest
 
@@ -1276,7 +1302,7 @@ $diagnosticResult.Analysis = $analysisResult
 $diagnosticResult.Score = $scoreResult
 $overallStatus = $analysisResult.Status
 
-Write-Host "`n=== DIAGNOSTIC FINAL ===" -ForegroundColor Cyan
+Write-UiSection -Title "Diagnostic final"
 Write-Host "Etat global : $overallStatus"
 Write-Host "Score : $($scoreResult.Value)/$($scoreResult.Max) ($($scoreResult.Level))"
 Write-Host "Succes : $($diagnosticResult.Summary.SuccessCount) | Avertissements : $($diagnosticResult.Summary.WarningCount) | Echecs : $($diagnosticResult.Summary.FailureCount)"
@@ -1425,7 +1451,7 @@ if ($GenerateDashboard) {
     New-DiagnosticDashboardHtml -ResultObject $diagnosticResult -OutputPath $htmlReportFile
 }
 
-Write-Host "`n[12] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-UiSection -Title "[12] Sauvegarde du rapport"
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
 if ($GenerateDashboard) {
