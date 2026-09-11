@@ -7,6 +7,9 @@ param(
     [string[]]$DnsTestDomains = @("google.com", "microsoft.com", "github.com"),
     [string]$RoutingTraceTarget = "1.1.1.1",
     [ValidateRange(1, 15)][int]$TraceMaxHops = 6,
+    [string]$TcpTarget = "google.com",
+    [int[]]$TcpPorts = @(80, 443, 445, 3389),
+    [ValidateRange(300, 5000)][int]$TcpTimeoutMs = 1200,
     [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
@@ -74,6 +77,15 @@ function New-DiagnosticResult {
             TraceSummary      = @()
             Status            = "INCONNU"
             Detail            = "Diagnostic routage non lance"
+        }
+        Ports      = [PSCustomObject]@{
+            Target       = "Non detecte"
+            TimeoutMs    = 0
+            Entries      = @()
+            OpenCount    = 0
+            ClosedCount  = 0
+            Status       = "INCONNU"
+            Detail       = "Diagnostic ports TCP non lance"
         }
         Tests      = @()
         Summary    = [PSCustomObject]@{
@@ -351,6 +363,120 @@ function Get-RoutingDiagnostic {
     return $routing
 }
 
+function Get-PortServiceLabel {
+    param(
+        [int]$Port
+    )
+
+    switch ($Port) {
+        80 { "HTTP" }
+        443 { "HTTPS" }
+        445 { "SMB" }
+        3389 { "RDP" }
+        default { "TCP" }
+    }
+}
+
+function Test-TcpPortEndpoint {
+    param(
+        [string]$Target,
+        [int]$Port,
+        [int]$TimeoutMs
+    )
+
+    $client = New-Object System.Net.Sockets.TcpClient
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $async = $client.BeginConnect($Target, $Port, $null, $null)
+        $isConnected = $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if (-not $isConnected) {
+            return [PSCustomObject]@{
+                Status    = "CLOSED"
+                Detail    = "Timeout"
+                LatencyMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 2)
+            }
+        }
+
+        $client.EndConnect($async)
+        return [PSCustomObject]@{
+            Status    = "OPEN"
+            Detail    = "Connexion TCP reussie"
+            LatencyMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 2)
+        }
+    }
+    catch {
+        return [PSCustomObject]@{
+            Status    = "CLOSED"
+            Detail    = $_.Exception.Message
+            LatencyMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 2)
+        }
+    }
+    finally {
+        $timer.Stop()
+        if ($client) { $client.Close() }
+    }
+}
+
+function Get-TcpPortDiagnostics {
+    param(
+        [string]$Target,
+        [int[]]$Ports,
+        [int]$TimeoutMs
+    )
+
+    $result = [PSCustomObject]@{
+        Target      = $Target
+        TimeoutMs   = $TimeoutMs
+        Entries     = @()
+        OpenCount   = 0
+        ClosedCount = 0
+        Status      = "AVERTISSEMENT"
+        Detail      = "Diagnostic ports partiel"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        $result.Status = "AVERTISSEMENT"
+        $result.Detail = "Aucune cible TCP fournie"
+        return $result
+    }
+
+    $validPorts = @($Ports | Where-Object { $_ -ge 1 -and $_ -le 65535 } | Select-Object -Unique)
+    if ($validPorts.Count -eq 0) {
+        $result.Status = "AVERTISSEMENT"
+        $result.Detail = "Aucun port TCP valide fourni"
+        return $result
+    }
+
+    foreach ($port in $validPorts) {
+        $probe = Test-TcpPortEndpoint -Target $Target -Port $port -TimeoutMs $TimeoutMs
+        $result.Entries += [PSCustomObject]@{
+            Service   = Get-PortServiceLabel -Port $port
+            Port      = $port
+            Status    = $probe.Status
+            Detail    = $probe.Detail
+            LatencyMs = $probe.LatencyMs
+        }
+    }
+
+    $result.OpenCount = @($result.Entries | Where-Object { $_.Status -eq "OPEN" }).Count
+    $result.ClosedCount = @($result.Entries | Where-Object { $_.Status -eq "CLOSED" }).Count
+
+    if ($result.OpenCount -eq 0) {
+        $result.Status = "AVERTISSEMENT"
+        $result.Detail = "Aucun port TCP teste n'est ouvert sur la cible"
+    }
+    elseif ($result.ClosedCount -gt 0) {
+        $result.Status = "AVERTISSEMENT"
+        $result.Detail = "Ports mixtes: certains ouverts, certains fermes"
+    }
+    else {
+        $result.Status = "OK"
+        $result.Detail = "Tous les ports TCP testes sont ouverts"
+    }
+
+    return $result
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -382,12 +508,17 @@ else {
 }
 $dnsResolutionDiagnostic = Get-DnsResolutionDiagnostic -DnsServer $effectiveDnsServer -Domains $DnsTestDomains
 $routingDiagnostic = Get-RoutingDiagnostic -Gateway $gateway -TraceTarget $RoutingTraceTarget -MaxHops $TraceMaxHops
+$effectiveTcpTarget = if ([string]::IsNullOrWhiteSpace($TcpTarget)) { $InternetHost } else { $TcpTarget }
+$tcpPortDiagnostic = Get-TcpPortDiagnostics -Target $effectiveTcpTarget -Ports $TcpPorts -TimeoutMs $TcpTimeoutMs
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
 $diagnosticResult.Parameters.DnsTestDomains = @($DnsTestDomains)
 $diagnosticResult.Parameters.RoutingTraceTarget = $RoutingTraceTarget
 $diagnosticResult.Parameters.TraceMaxHops = $TraceMaxHops
+$diagnosticResult.Parameters.TcpTarget = $effectiveTcpTarget
+$diagnosticResult.Parameters.TcpPorts = @($TcpPorts)
+$diagnosticResult.Parameters.TcpTimeoutMs = $TcpTimeoutMs
 $diagnosticResult.Network.LocalIPv4 = $localIp
 $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
@@ -404,6 +535,7 @@ $diagnosticResult.Network.InterfaceAlias = $interfaceAlias
 $diagnosticResult.Network.InterfaceStatus = $interfaceStatus
 $diagnosticResult.Dns = $dnsResolutionDiagnostic
 $diagnosticResult.Routing = $routingDiagnostic
+$diagnosticResult.Ports = $tcpPortDiagnostic
 
 # Fonction utilitaire de test ping
 function Test-NetworkTarget {
@@ -523,6 +655,24 @@ Write-Host "Interface route : $($routingDiagnostic.InterfaceAlias)"
 Write-Host "Passerelle joignable : $(if ($routingDiagnostic.NextHopReachable) { 'Oui' } else { 'Non' })"
 $diagnosticResult.Tests += $routingTest
 
+Write-Host "`n[8] Test ports TCP ($effectiveTcpTarget) :" -ForegroundColor Yellow
+foreach ($entry in $tcpPortDiagnostic.Entries) {
+    Write-Host "$($entry.Service) $($entry.Port) : $($entry.Status) ($($entry.LatencyMs) ms)"
+}
+$tcpPortTest = [PSCustomObject]@{
+    Test              = "TCP Ports"
+    Cible             = $effectiveTcpTarget
+    Statut            = $tcpPortDiagnostic.Status
+    Detail            = $tcpPortDiagnostic.Detail
+    AttemptCount      = @($tcpPortDiagnostic.Entries).Count
+    SuccessCount      = $tcpPortDiagnostic.OpenCount
+    PacketLossPercent = $null
+    AverageLatencyMs  = if (@($tcpPortDiagnostic.Entries).Count -gt 0) { [Math]::Round((@($tcpPortDiagnostic.Entries | Measure-Object -Property LatencyMs -Average).Average), 2) } else { $null }
+    MaxLatencyMs      = if (@($tcpPortDiagnostic.Entries).Count -gt 0) { (@($tcpPortDiagnostic.Entries | Measure-Object -Property LatencyMs -Maximum).Maximum) } else { $null }
+}
+Write-Host "$($tcpPortTest.Statut) - $($tcpPortTest.Detail)"
+$diagnosticResult.Tests += $tcpPortTest
+
 $diagnosticResult.Summary.SuccessCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "OK" }).Count
 $diagnosticResult.Summary.FailureCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count
 $diagnosticResult.Summary.WarningCount = @($diagnosticResult.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count
@@ -556,6 +706,7 @@ $reportLines = @(
     "- $($dhcpTest.Test) [$($dhcpTest.Cible)] : $($dhcpTest.Statut) - $($dhcpTest.Detail)",
     "- $($dnsResolutionTest.Test) [$($dnsResolutionTest.Cible)] : $($dnsResolutionTest.Statut) - $($dnsResolutionTest.Detail)",
     "- $($routingTest.Test) [$($routingTest.Cible)] : $($routingTest.Statut) - $($routingTest.Detail)",
+    "- $($tcpPortTest.Test) [$($tcpPortTest.Cible)] : $($tcpPortTest.Statut) - $($tcpPortTest.Detail)",
     "",
     "[3] DNS resolution details",
     "Serveur teste : $effectiveDnsServer",
@@ -571,13 +722,20 @@ $reportLines = @(
     "Passerelle joignable : $(if ($routingDiagnostic.NextHopReachable) { 'Oui' } else { 'Non' })",
     "Statut : $($routingDiagnostic.Status) - $($routingDiagnostic.Detail)",
     "",
-    "[5] Resume",
+    "[5] TCP ports details",
+    "Cible : $effectiveTcpTarget",
+    "Ports testes : $(@($TcpPorts) -join ', ')",
+    "Ouverts : $($tcpPortDiagnostic.OpenCount)",
+    "Fermes : $($tcpPortDiagnostic.ClosedCount)",
+    "Statut : $($tcpPortDiagnostic.Status) - $($tcpPortDiagnostic.Detail)",
+    "",
+    "[6] Resume",
     "Etat global : $overallStatus",
     "Succes : $($diagnosticResult.Summary.SuccessCount)",
     "Echecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
-    "[6] ipconfig /all",
+    "[7] ipconfig /all",
     ""
 )
 
@@ -592,6 +750,14 @@ if (@($routingDiagnostic.TraceSummary).Count -gt 0) {
     $reportLines += @($routingDiagnostic.TraceSummary)
 }
 
+if (@($tcpPortDiagnostic.Entries).Count -gt 0) {
+    $reportLines += ""
+    $reportLines += "[TCP ports extrait]"
+    foreach ($entry in $tcpPortDiagnostic.Entries) {
+        $reportLines += "- $($entry.Service) $($entry.Port): $($entry.Status) - $($entry.Detail) - $($entry.LatencyMs) ms"
+    }
+}
+
 $stopwatch.Stop()
 $diagnosticResult.Metadata.DurationMs = $stopwatch.ElapsedMilliseconds
 $diagnosticResult | Add-Member -MemberType NoteProperty -Name OverallStatus -Value $overallStatus -Force
@@ -600,6 +766,6 @@ $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 
-Write-Host "`n[8] Sauvegarde du rapport..." -ForegroundColor Yellow
+Write-Host "`n[9] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
