@@ -19,6 +19,8 @@ param(
     [switch]$EnableBandwidthTest,
     [string]$BandwidthTestUrl = "https://proof.ovh.net/files/10Mb.dat",
     [ValidateRange(1, 60)][int]$BandwidthTimeoutSec = 20,
+    [switch]$GenerateDashboard = $true,
+    [switch]$OpenDashboard,
     [ValidateRange(1, 20)][int]$PingCount = 2
 )
 
@@ -30,6 +32,7 @@ Write-Host "=== DIAGNOSTIC RESEAU ===" -ForegroundColor Cyan
 $date = Get-Date -Format "yyyy-MM-dd_HH-mm"
 $reportFile = Join-Path -Path $PSScriptRoot -ChildPath "diagnostic_$date.txt"
 $jsonReportFile = Join-Path -Path $PSScriptRoot -ChildPath "diagnostic_$date.json"
+$htmlReportFile = Join-Path -Path $PSScriptRoot -ChildPath "diagnostic_$date.html"
 
 function New-DiagnosticResult {
     param(
@@ -877,6 +880,122 @@ function Get-DiagnosticScore {
     }
 }
 
+function New-DiagnosticDashboardHtml {
+    param(
+        [PSCustomObject]$ResultObject,
+        [string]$OutputPath
+    )
+
+    $jsonData = ($ResultObject | ConvertTo-Json -Depth 8)
+    $jsonData = $jsonData -replace "</script>", "<\/script>"
+
+    $html = @"
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diagnostic Reseau - $($ResultObject.Metadata.ComputerName)</title>
+  <style>
+    :root{--bg:#0b1220;--panel:#111a2b;--muted:#8da0be;--txt:#e6edf7;--ok:#26b364;--warn:#e3b341;--err:#f85149;--acc:#4cb3ff;}
+    *{box-sizing:border-box} body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:radial-gradient(circle at 10% 10%,#1c2b47 0,#0b1220 45%,#070d18 100%);color:var(--txt)}
+    .wrap{max-width:1200px;margin:24px auto;padding:0 16px}
+    .head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:16px}
+    .title{font-size:28px;font-weight:700;letter-spacing:.3px}
+    .sub{color:var(--muted);font-size:13px}
+    .grid{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:12px}
+    .card,.panel{background:linear-gradient(180deg,#121d30,#0f1829);border:1px solid #22314d;border-radius:12px;padding:14px}
+    .k{font-size:12px;color:var(--muted)} .v{font-size:24px;font-weight:700;margin-top:4px}
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)} .acc{color:var(--acc)}
+    .layout{display:grid;grid-template-columns:1.1fr 1fr;gap:12px;margin-top:12px}
+    .panel h3{margin:0 0 10px;font-size:15px}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th,td{padding:6px 4px;border-bottom:1px solid #21314f;text-align:left}
+    .badge{padding:3px 8px;border-radius:999px;font-size:12px;font-weight:600}
+    .b-ok{background:rgba(38,179,100,.18);color:var(--ok)} .b-warn{background:rgba(227,179,65,.18);color:var(--warn)} .b-err{background:rgba(248,81,73,.16);color:var(--err)}
+    .rec li{margin-bottom:6px}
+    @media (max-width:980px){.grid{grid-template-columns:repeat(2,1fr)} .layout{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <div class="title">Network Diagnostic Dashboard</div>
+        <div class="sub" id="meta"></div>
+      </div>
+      <div id="globalBadge" class="badge"></div>
+    </div>
+    <div class="grid">
+      <div class="card"><div class="k">Score</div><div class="v acc" id="kScore">-</div></div>
+      <div class="card"><div class="k">Tests OK</div><div class="v ok" id="kOk">-</div></div>
+      <div class="card"><div class="k">Warnings</div><div class="v warn" id="kWarn">-</div></div>
+      <div class="card"><div class="k">Errors</div><div class="v err" id="kErr">-</div></div>
+      <div class="card"><div class="k">Latency Under Load</div><div class="v" id="kLatency">N/A</div></div>
+    </div>
+    <div class="layout">
+      <div class="panel">
+        <h3>Tests</h3>
+        <table><thead><tr><th>Test</th><th>Cible</th><th>Statut</th><th>Detail</th></tr></thead><tbody id="testsBody"></tbody></table>
+      </div>
+      <div class="panel">
+        <h3>Network Load (Before / Under / After)</h3>
+        <table><thead><tr><th>Phase</th><th>Avg (ms)</th><th>Max (ms)</th><th>Loss (%)</th></tr></thead><tbody id="loadBody"></tbody></table>
+      </div>
+    </div>
+    <div class="layout">
+      <div class="panel">
+        <h3>Configuration reseau</h3>
+        <table><tbody id="netBody"></tbody></table>
+      </div>
+      <div class="panel">
+        <h3>Recommandations</h3>
+        <ul class="rec" id="recList"></ul>
+      </div>
+    </div>
+  </div>
+  <script id="diag-data" type="application/json">$jsonData</script>
+  <script>
+    const d = JSON.parse(document.getElementById("diag-data").textContent);
+    const statusClass = s => s==="OK"||s==="HEALTHY"?"b-ok":(s==="WARNING"||s==="AVERTISSEMENT"?"b-warn":"b-err");
+    const safe = v => v===null||v===undefined||v===""?"N/A":v;
+    document.getElementById("meta").textContent = `${safe(d.Metadata.ComputerName)} • ${safe(d.Network.InterfaceAlias)} • ${safe(d.Network.LocalIPv4)} • ${safe(d.Metadata.Timestamp)}`;
+    const g = document.getElementById("globalBadge");
+    g.className = "badge " + statusClass(d.Analysis.Status || d.OverallStatus); g.textContent = safe(d.Analysis.Status || d.OverallStatus);
+    document.getElementById("kScore").textContent = `${safe(d.Score.Value)}/${safe(d.Score.Max)}`;
+    document.getElementById("kOk").textContent = safe(d.Summary.SuccessCount);
+    document.getElementById("kWarn").textContent = safe(d.Summary.WarningCount);
+    document.getElementById("kErr").textContent = safe(d.Summary.FailureCount);
+    document.getElementById("kLatency").textContent = d.LoadTest && d.LoadTest.UnderLoad ? `${safe(d.LoadTest.UnderLoad.AverageLatencyMs)} ms` : "N/A";
+    const testsBody = document.getElementById("testsBody");
+    (d.Tests || []).forEach(t => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${safe(t.Test)}</td><td>${safe(t.Cible)}</td><td><span class="badge ${statusClass(t.Statut)}">${safe(t.Statut)}</span></td><td>${safe(t.Detail)}</td>`;
+      testsBody.appendChild(tr);
+    });
+    const loadBody = document.getElementById("loadBody");
+    [["Before", d.LoadTest?.Before], ["Under", d.LoadTest?.UnderLoad], ["After", d.LoadTest?.After]].forEach(([n,v]) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${n}</td><td>${safe(v?.AverageLatencyMs)}</td><td>${safe(v?.MaxLatencyMs)}</td><td>${safe(v?.PacketLossPercent)}</td>`;
+      loadBody.appendChild(tr);
+    });
+    const netRows = [
+      ["IPv4", d.Network.LocalIPv4], ["Masque", d.Network.SubnetMask], ["Passerelle", d.Network.Gateway],
+      ["DNS", (d.Network.DnsServers||[]).join(", ")], ["DHCP", d.Network.DhcpEnabled], ["MAC", d.Network.MacAddress],
+      ["Wi-Fi SSID", d.Wifi?.Ssid], ["TCP Target", d.Ports?.Target], ["TCP Open/Closed", `${safe(d.Ports?.OpenCount)}/${safe(d.Ports?.ClosedCount)}`]
+    ];
+    const netBody = document.getElementById("netBody");
+    netRows.forEach(([k,v]) => { const tr=document.createElement("tr"); tr.innerHTML=`<th>${k}</th><td>${safe(v)}</td>`; netBody.appendChild(tr); });
+    const recList = document.getElementById("recList");
+    (d.Analysis?.Recommendations || ["Aucune recommendation."]).forEach(r => { const li=document.createElement("li"); li.textContent=r; recList.appendChild(li); });
+  </script>
+</body>
+</html>
+"@
+
+    $html | Out-File -FilePath $OutputPath -Encoding UTF8
+}
+
 # Récupération de l'interface active (IPv4)
 $activeConfig = $null
 try {
@@ -931,6 +1050,8 @@ $diagnosticResult.Parameters.LoadTestParallelStreams = $LoadTestParallelStreams
 $diagnosticResult.Parameters.EnableBandwidthTest = [bool]$EnableBandwidthTest
 $diagnosticResult.Parameters.BandwidthTestUrl = $BandwidthTestUrl
 $diagnosticResult.Parameters.BandwidthTimeoutSec = $BandwidthTimeoutSec
+$diagnosticResult.Parameters.GenerateDashboard = [bool]$GenerateDashboard
+$diagnosticResult.Parameters.OpenDashboard = [bool]$OpenDashboard
 $diagnosticResult.Network.LocalIPv4 = $localIp
 $diagnosticResult.Network.PrefixLength = $prefixLength
 $diagnosticResult.Network.SubnetMask = $subnetMask
@@ -1300,7 +1421,16 @@ $diagnosticResult | Add-Member -MemberType NoteProperty -Name OverallStatus -Val
 $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
 $diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
+if ($GenerateDashboard) {
+    New-DiagnosticDashboardHtml -ResultObject $diagnosticResult -OutputPath $htmlReportFile
+}
 
 Write-Host "`n[12] Sauvegarde du rapport..." -ForegroundColor Yellow
 Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
 Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
+if ($GenerateDashboard) {
+    Write-Host "Dashboard HTML sauvegarde : $htmlReportFile" -ForegroundColor Green
+    if ($OpenDashboard) {
+        Start-Process $htmlReportFile
+    }
+}
