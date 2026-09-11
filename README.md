@@ -103,5 +103,10 @@ Diagnostic-Reseau.ps1
 - Tests automatisés Pester.
 - Documentation d’exploitation et troubleshooting avancé.
 
+## Documentation
+- Guide utilisateur : `README.md`
+- Guide technicien L1/L2 : `Docs/Guide-Technicien.md`
+- Changelog : `CHANGELOG.md`
+
 ## Exemple
-![Exemple de sortie du script](./Assets/exemple-sortie.png)
+![Exemple de sortie du script](./Assets/Network%20Diagnostic%20Tool.png)

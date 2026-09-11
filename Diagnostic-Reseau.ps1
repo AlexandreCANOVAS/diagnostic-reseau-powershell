@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -25,6 +25,7 @@ param(
 )
 
 $ErrorActionPreference = "SilentlyContinue"
+$diagnosticStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 # Nom du rapport horodaté
 $date = Get-Date -Format "yyyy-MM-dd_HH-mm"
@@ -34,7 +35,7 @@ $htmlReportFile = Join-Path -Path $PSScriptRoot -ChildPath "diagnostic_$date.htm
 
 function Write-UiBanner {
     Write-Host "============================================================" -ForegroundColor DarkCyan
-    Write-Host "                 NETWORK DIAGNOSTIC TOOL                    " -ForegroundColor Cyan
+    Write-Host "              OUTIL DE DIAGNOSTIC RÉSEAU                    " -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor DarkCyan
 }
 
@@ -105,7 +106,7 @@ function New-DiagnosticResult {
             SuccessCount = 0
             FailureCount = 0
             Status       = "INCONNU"
-            Detail       = "Diagnostic DNS non lance"
+        Detail       = "Diagnostic DNS non lancé"
         }
         Routing    = [PSCustomObject]@{
             TraceTarget       = "Non detecte"
@@ -114,7 +115,7 @@ function New-DiagnosticResult {
             NextHopReachable  = $false
             TraceSummary      = @()
             Status            = "INCONNU"
-            Detail            = "Diagnostic routage non lance"
+            Detail            = "Diagnostic routage non lancé"
         }
         Ports      = [PSCustomObject]@{
             Target       = "Non detecte"
@@ -123,7 +124,7 @@ function New-DiagnosticResult {
             OpenCount    = 0
             ClosedCount  = 0
             Status       = "INCONNU"
-            Detail       = "Diagnostic ports TCP non lance"
+            Detail       = "Diagnostic ports TCP non lancé"
         }
         Wifi       = [PSCustomObject]@{
             Available      = $false
@@ -136,7 +137,7 @@ function New-DiagnosticResult {
             ReceiveRateMbps = $null
             TransmitRateMbps = $null
             Status         = "INCONNU"
-            Detail         = "Diagnostic Wi-Fi non lance"
+            Detail         = "Diagnostic Wi-Fi non lancé"
             NearbyCount    = $null
         }
         LoadTest   = [PSCustomObject]@{
@@ -150,7 +151,7 @@ function New-DiagnosticResult {
             AvgLatencyDeltaMs  = $null
             MaxLatencyDeltaMs  = $null
             Status             = "INCONNU"
-            Detail             = "Test de charge non lance"
+            Detail             = "Test de charge non lancé"
         }
         Bandwidth  = [PSCustomObject]@{
             Enabled          = $false
@@ -159,13 +160,13 @@ function New-DiagnosticResult {
             DownloadBytes    = $null
             DurationMs       = $null
             Status           = "INCONNU"
-            Detail           = "Test de debit non lance"
+            Detail           = "Test de débit non lancé"
         }
         Analysis   = [PSCustomObject]@{
             Findings         = @()
             Recommendations  = @()
             Status           = "INCONNU"
-            Detail           = "Analyse non lancee"
+            Detail           = "Analyse non lancée"
         }
         Score      = [PSCustomObject]@{
             Value            = $null
@@ -204,22 +205,6 @@ function Convert-PrefixLengthToSubnetMask {
     return ([System.Net.IPAddress]::new($bytes)).ToString()
 }
 
-function Get-OverallStatus {
-    param(
-        [PSCustomObject]$Summary
-    )
-
-    if ($Summary.FailureCount -gt 0) {
-        return "CRITICAL"
-    }
-
-    if ($Summary.WarningCount -gt 0) {
-        return "WARNING"
-    }
-
-    return "HEALTHY"
-}
-
 function Get-DhcpDiagnostic {
     param(
         [int]$InterfaceIndex,
@@ -234,7 +219,7 @@ function Get-DhcpDiagnostic {
         LeaseEnd     = $null
         IsApipa      = $false
         TestStatus   = "AVERTISSEMENT"
-        TestDetail   = "Etat DHCP non determine"
+        TestDetail   = "État DHCP non déterminé"
         Source       = "Fallback"
     }
 
@@ -262,14 +247,14 @@ function Get-DhcpDiagnostic {
 
     if ($dhcpInfo.IsApipa) {
         $dhcpInfo.TestStatus = "ECHEC"
-        $dhcpInfo.TestDetail = "APIPA detectee (169.254.x.x) - attribution DHCP probablement en echec"
+        $dhcpInfo.TestDetail = "APIPA détectée (169.254.x.x) - attribution DHCP probablement en échec"
         return $dhcpInfo
     }
 
     if ($dhcpInfo.Enabled -eq "True" -or $dhcpInfo.Enabled -eq "Enabled") {
         if ($dhcpInfo.Server -eq "Non detecte") {
             $dhcpInfo.TestStatus = "AVERTISSEMENT"
-            $dhcpInfo.TestDetail = "DHCP actif mais serveur DHCP non detecte"
+            $dhcpInfo.TestDetail = "DHCP actif mais serveur DHCP non détecté"
         }
         else {
             $dhcpInfo.TestStatus = "OK"
@@ -278,7 +263,7 @@ function Get-DhcpDiagnostic {
     }
     else {
         $dhcpInfo.TestStatus = "AVERTISSEMENT"
-        $dhcpInfo.TestDetail = "DHCP desactive (configuration IP statique possible)"
+        $dhcpInfo.TestDetail = "DHCP désactivé (configuration IP statique possible)"
     }
 
     return $dhcpInfo
@@ -302,7 +287,7 @@ function Get-DnsResolutionDiagnostic {
 
     if ([string]::IsNullOrWhiteSpace($DnsServer) -or $DnsServer -eq "Non detectee") {
         $result.Status = "ECHEC"
-        $result.Detail = "Serveur DNS non disponible pour le test de resolution"
+        $result.Detail = "Serveur DNS non disponible pour le test de résolution"
         return $result
     }
 
@@ -315,7 +300,7 @@ function Get-DnsResolutionDiagnostic {
     $domainsToTest = @($Domains | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
     if ($domainsToTest.Count -eq 0) {
         $result.Status = "AVERTISSEMENT"
-        $result.Detail = "Aucun domaine DNS a tester"
+        $result.Detail = "Aucun domaine DNS à tester"
         return $result
     }
 
@@ -327,7 +312,7 @@ function Get-DnsResolutionDiagnostic {
 
             $ipAddresses = @($records | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress -Unique)
             $status = if ($ipAddresses.Count -gt 0) { "OK" } else { "AVERTISSEMENT" }
-            $detail = if ($ipAddresses.Count -gt 0) { "Resolution reussie" } else { "Aucune adresse IPv4 retournee" }
+            $detail = if ($ipAddresses.Count -gt 0) { "Résolution réussie" } else { "Aucune adresse IPv4 retournée" }
 
             $result.Entries += [PSCustomObject]@{
                 Domain      = $domain
@@ -354,15 +339,15 @@ function Get-DnsResolutionDiagnostic {
 
     if ($result.FailureCount -eq $result.Entries.Count) {
         $result.Status = "ECHEC"
-        $result.Detail = "Aucune resolution DNS reussie"
+        $result.Detail = "Aucune résolution DNS réussie"
     }
     elseif ($result.FailureCount -gt 0) {
         $result.Status = "AVERTISSEMENT"
-        $result.Detail = "Resolution DNS partiellement reussie"
+        $result.Detail = "Résolution DNS partiellement réussie"
     }
     else {
         $result.Status = "OK"
-        $result.Detail = "Resolution DNS valide pour tous les domaines testes"
+        $result.Detail = "Résolution DNS valide pour tous les domaines testés"
     }
 
     return $result
@@ -406,7 +391,7 @@ function Get-RoutingDiagnostic {
 
     if ([string]::IsNullOrWhiteSpace($TraceTarget)) {
         $routing.Status = "AVERTISSEMENT"
-        $routing.Detail = "Aucune cible definie pour le traceroute"
+        $routing.Detail = "Aucune cible définie pour le traceroute"
         return $routing
     }
 
@@ -424,21 +409,21 @@ function Get-RoutingDiagnostic {
         $hasCompleted = @($cleanLines | Where-Object { $_ -match "Trace complete" -or $_ -match "Tracage termine" }).Count -gt 0
         if ($hasCompleted -and $routing.NextHopReachable) {
             $routing.Status = "OK"
-            $routing.Detail = "Route par defaut presente, passerelle joignable, traceroute termine"
+            $routing.Detail = "Route par défaut présente, passerelle joignable, traceroute terminé"
         }
         elseif ($routing.NextHopReachable) {
             $routing.Status = "AVERTISSEMENT"
-            $routing.Detail = "Passerelle joignable mais traceroute incomplet ou cible distante filtree"
+            $routing.Detail = "Passerelle joignable mais traceroute incomplet ou cible distante filtrée"
         }
         else {
             $routing.Status = "ECHEC"
-            $routing.Detail = "Passerelle non joignable ou routage degrade"
+            $routing.Detail = "Passerelle non joignable ou routage dégradé"
         }
     }
     catch {
         if ($routing.NextHopReachable) {
             $routing.Status = "AVERTISSEMENT"
-            $routing.Detail = "Impossible d'executer le traceroute complet"
+            $routing.Detail = "Impossible d'exécuter le traceroute complet"
         }
         else {
             $routing.Status = "ECHEC"
@@ -486,7 +471,7 @@ function Test-TcpPortEndpoint {
         $client.EndConnect($async)
         return [PSCustomObject]@{
             Status    = "OPEN"
-            Detail    = "Connexion TCP reussie"
+            Detail    = "Connexion TCP réussie"
             LatencyMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 2)
         }
     }
@@ -549,7 +534,7 @@ function Get-TcpPortDiagnostics {
 
     if ($result.OpenCount -eq 0) {
         $result.Status = "AVERTISSEMENT"
-        $result.Detail = "Aucun port TCP teste n'est ouvert sur la cible"
+        $result.Detail = "Aucun port TCP testé n'est ouvert sur la cible"
     }
     elseif ($result.ClosedCount -gt 0) {
         $result.Status = "AVERTISSEMENT"
@@ -557,7 +542,7 @@ function Get-TcpPortDiagnostics {
     }
     else {
         $result.Status = "OK"
-        $result.Detail = "Tous les ports TCP testes sont ouverts"
+        $result.Detail = "Tous les ports TCP testés sont ouverts"
     }
 
     return $result
@@ -579,7 +564,7 @@ function Get-WifiDiagnostics {
         ReceiveRateMbps  = $null
         TransmitRateMbps = $null
         Status           = "AVERTISSEMENT"
-        Detail           = "Aucune interface Wi-Fi active detectee"
+        Detail           = "Aucune interface Wi-Fi active détectée"
         NearbyCount      = $null
     }
 
@@ -617,19 +602,19 @@ function Get-WifiDiagnostics {
 
     if (-not $wifi.Available) {
         $wifi.Status = "AVERTISSEMENT"
-        $wifi.Detail = "Aucune interface Wi-Fi detectee"
+        $wifi.Detail = "Aucune interface Wi-Fi détectée"
     }
     elseif ($wifi.Ssid -eq "" -or $wifi.Ssid -eq "N/A") {
         $wifi.Status = "AVERTISSEMENT"
-        $wifi.Detail = "Interface Wi-Fi presente mais non connectee"
+        $wifi.Detail = "Interface Wi-Fi présente mais non connectée"
     }
     elseif ($wifi.SignalPercent -lt 40) {
         $wifi.Status = "AVERTISSEMENT"
-        $wifi.Detail = "Wi-Fi connecte mais signal faible"
+        $wifi.Detail = "Wi-Fi connecté mais signal faible"
     }
     else {
         $wifi.Status = "OK"
-        $wifi.Detail = "Wi-Fi connecte et signal correct"
+        $wifi.Detail = "Wi-Fi connecté et signal correct"
     }
 
     return $wifi
@@ -733,15 +718,15 @@ function Invoke-ControlledNetworkLoadTest {
     $underLoss = $loadResult.UnderLoad.PacketLossPercent
     if ($underLoss -ge 10) {
         $loadResult.Status = "ECHEC"
-        $loadResult.Detail = "Perte de paquets elevee detectee sous charge"
+        $loadResult.Detail = "Perte de paquets élevée détectée sous charge"
     }
     elseif ($loadResult.AvgLatencyDeltaMs -ge 20 -or $underLoss -gt 0) {
         $loadResult.Status = "AVERTISSEMENT"
-        $loadResult.Detail = "Degradation de latence detectee sous charge"
+        $loadResult.Detail = "Dégradation de latence détectée sous charge"
     }
     else {
         $loadResult.Status = "OK"
-        $loadResult.Detail = "Comportement reseau stable sous charge controlee"
+        $loadResult.Detail = "Comportement réseau stable sous charge contrôlée"
     }
 
     return $loadResult
@@ -761,7 +746,7 @@ function Invoke-BandwidthDiagnostic {
         DownloadBytes = $null
         DurationMs    = $null
         Status        = "INFO"
-        Detail        = "Test de debit desactive"
+        Detail        = "Test de débit désactivé"
     }
 
     if (-not $Enabled) {
@@ -770,7 +755,7 @@ function Invoke-BandwidthDiagnostic {
 
     if ([string]::IsNullOrWhiteSpace($TestUrl)) {
         $bandwidth.Status = "AVERTISSEMENT"
-        $bandwidth.Detail = "URL de test debit manquante"
+        $bandwidth.Detail = "URL de test débit manquante"
         return $bandwidth
     }
 
@@ -803,11 +788,11 @@ function Invoke-BandwidthDiagnostic {
         $bandwidth.DurationMs = [Math]::Round($timer.Elapsed.TotalMilliseconds, 2)
         $bandwidth.DownloadMbps = $mbps
         $bandwidth.Status = "OK"
-        $bandwidth.Detail = "Debit descendant mesure avec succes"
+        $bandwidth.Detail = "Débit descendant mesuré avec succès"
     }
     catch {
         $bandwidth.Status = "AVERTISSEMENT"
-        $bandwidth.Detail = "Mesure de debit indisponible: $($_.Exception.Message)"
+        $bandwidth.Detail = "Mesure de débit indisponible: $($_.Exception.Message)"
     }
 
     return $bandwidth
@@ -822,7 +807,7 @@ function Get-DiagnosticAnalysis {
         Findings        = @()
         Recommendations = @()
         Status          = "HEALTHY"
-        Detail          = "Aucun incident critique detecte"
+        Detail          = "Aucun incident critique détecté"
     }
 
     foreach ($test in $ResultObject.Tests) {
@@ -835,42 +820,42 @@ function Get-DiagnosticAnalysis {
     }
 
     if ($ResultObject.Network.IsApipa) {
-        $analysis.Recommendations += "Renouveler le bail DHCP (ipconfig /release puis /renew) et verifier le serveur DHCP."
+        $analysis.Recommendations += "Renouveler le bail DHCP (ipconfig /release puis /renew) et vérifier le serveur DHCP."
     }
 
     if ($ResultObject.Routing.NextHopReachable -eq $false) {
-        $analysis.Recommendations += "Verifier la passerelle par defaut, le cablage et le VLAN du poste."
+        $analysis.Recommendations += "Vérifier la passerelle par défaut, le câblage et le VLAN du poste."
     }
 
     if ($ResultObject.Dns.FailureCount -gt 0) {
-        $analysis.Recommendations += "Verifier la disponibilite des serveurs DNS et la resolution des domaines internes."
+        $analysis.Recommendations += "Vérifier la disponibilité des serveurs DNS et la résolution des domaines internes."
     }
 
     if ($ResultObject.Ports.ClosedCount -gt 0) {
-        $analysis.Recommendations += "Verifier les pare-feux et l'accessibilite des services TCP attendus."
+        $analysis.Recommendations += "Vérifier les pare-feux et l'accessibilité des services TCP attendus."
     }
 
     if ($ResultObject.Wifi.Status -eq "AVERTISSEMENT" -and $ResultObject.Wifi.SignalPercent -ne $null -and $ResultObject.Wifi.SignalPercent -lt 40) {
-        $analysis.Recommendations += "Ameliorer la qualite du signal Wi-Fi (position, canal, borne)."
+        $analysis.Recommendations += "Améliorer la qualité du signal Wi-Fi (position, canal, borne)."
     }
 
     if ($ResultObject.LoadTest.Status -eq "AVERTISSEMENT" -or $ResultObject.LoadTest.Status -eq "ECHEC") {
-        $analysis.Recommendations += "Investiguer la congestion reseau: latence degradee detectee sous charge controlee."
+        $analysis.Recommendations += "Investiguer la congestion réseau : latence dégradée détectée sous charge contrôlée."
     }
 
     if ($analysis.Recommendations.Count -eq 0) {
-        $analysis.Recommendations += "Aucune action immediate requise."
+        $analysis.Recommendations += "Aucune action immédiate requise."
     }
 
     $hasError = @($ResultObject.Tests | Where-Object { $_.Statut -eq "ECHEC" }).Count -gt 0
     $hasWarning = @($ResultObject.Tests | Where-Object { $_.Statut -eq "AVERTISSEMENT" }).Count -gt 0
     if ($hasError) {
         $analysis.Status = "CRITICAL"
-        $analysis.Detail = "Au moins un test critique est en echec"
+        $analysis.Detail = "Au moins un test critique est en échec"
     }
     elseif ($hasWarning) {
         $analysis.Status = "WARNING"
-        $analysis.Detail = "Des avertissements necessitent verification"
+        $analysis.Detail = "Des avertissements nécessitent vérification"
     }
 
     return $analysis
@@ -915,13 +900,50 @@ function New-DiagnosticDashboardHtml {
     $jsonData = ($ResultObject | ConvertTo-Json -Depth 8)
     $jsonData = $jsonData -replace "</script>", "<\/script>"
 
+    $enc = [System.Net.WebUtility]
+    $computer = $enc::HtmlEncode([string]$ResultObject.Metadata.ComputerName)
+    $iface = $enc::HtmlEncode([string]$ResultObject.Network.InterfaceAlias)
+    $ip = $enc::HtmlEncode([string]$ResultObject.Network.LocalIPv4)
+    $timestampIsoRaw = [string]$ResultObject.Metadata.Timestamp
+    $timestampDisplayRaw = $timestampIsoRaw
+    $timestampTimeRaw = $timestampIsoRaw
+    try {
+        $timestampDisplayRaw = [DateTimeOffset]::Parse($timestampIsoRaw).ToString("dd/MM/yyyy HH:mm:ss")
+        $timestampTimeRaw = [DateTimeOffset]::Parse($timestampIsoRaw).ToString("HH:mm:ss")
+    }
+    catch {
+        $timestampDisplayRaw = $timestampIsoRaw
+        $timestampTimeRaw = $timestampIsoRaw
+    }
+    $timestamp = $enc::HtmlEncode($timestampIsoRaw)
+    $timestampDisplay = $enc::HtmlEncode($timestampDisplayRaw)
+    $timestampTime = $enc::HtmlEncode($timestampTimeRaw)
+
+    $networkRowsHtml = @(
+        "<tr><th>IPv4</th><td>$($enc::HtmlEncode([string]$ResultObject.Network.LocalIPv4))</td></tr>",
+        "<tr><th>Masque</th><td>$($enc::HtmlEncode([string]$ResultObject.Network.SubnetMask))</td></tr>",
+        "<tr><th>Passerelle</th><td>$($enc::HtmlEncode([string]$ResultObject.Network.Gateway))</td></tr>",
+        "<tr><th>DNS</th><td>$($enc::HtmlEncode((@($ResultObject.Network.DnsServers) -join ', ')))</td></tr>",
+        "<tr><th>DHCP</th><td>$($enc::HtmlEncode([string]$ResultObject.Network.DhcpEnabled))</td></tr>",
+        "<tr><th>MAC</th><td>$($enc::HtmlEncode([string]$ResultObject.Network.MacAddress))</td></tr>",
+        "<tr><th>Wi-Fi SSID</th><td>$($enc::HtmlEncode([string]$ResultObject.Wifi.Ssid))</td></tr>",
+        "<tr><th>TCP Target</th><td>$($enc::HtmlEncode([string]$ResultObject.Ports.Target))</td></tr>",
+        "<tr><th>TCP Open/Closed</th><td>$($enc::HtmlEncode([string]("{0}/{1}" -f $ResultObject.Ports.OpenCount, $ResultObject.Ports.ClosedCount)))</td></tr>"
+    ) -join ""
+
+    $recommendations = @($ResultObject.Analysis.Recommendations)
+    if ($recommendations.Count -eq 0) {
+        $recommendations = @("Aucune recommandation.")
+    }
+    $recommendationsHtml = (($recommendations | ForEach-Object { "<li>$($enc::HtmlEncode([string]$_))</li>" }) -join "")
+
     $html = @"
 <!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Diagnostic Reseau - $($ResultObject.Metadata.ComputerName)</title>
+  <title>Diagnostic R&eacute;seau - $($ResultObject.Metadata.ComputerName)</title>
   <style>
     :root{--bg:#0b1220;--panel:#111a2b;--muted:#8da0be;--txt:#e6edf7;--ok:#26b364;--warn:#e3b341;--err:#f85149;--acc:#4cb3ff;}
     *{box-sizing:border-box} body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:radial-gradient(circle at 10% 10%,#1c2b47 0,#0b1220 45%,#070d18 100%);color:var(--txt)}
@@ -929,7 +951,7 @@ function New-DiagnosticDashboardHtml {
     .head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:16px}
     .title{font-size:28px;font-weight:700;letter-spacing:.3px}
     .sub{color:var(--muted);font-size:13px}
-    .grid{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:12px}
+    .grid{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:12px}
     .card,.panel{background:linear-gradient(180deg,#121d30,#0f1829);border:1px solid #22314d;border-radius:12px;padding:14px}
     .k{font-size:12px;color:var(--muted)} .v{font-size:24px;font-weight:700;margin-top:4px}
     .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)} .acc{color:var(--acc)}
@@ -947,36 +969,37 @@ function New-DiagnosticDashboardHtml {
   <div class="wrap">
     <div class="head">
       <div>
-        <div class="title">Network Diagnostic Dashboard</div>
-        <div class="sub" id="meta"></div>
+        <div class="title">Dashboard Diagnostic R&eacute;seau</div>
+        <div class="sub" id="meta">$computer | $iface | $ip | $timestampDisplay</div>
       </div>
       <div id="globalBadge" class="badge"></div>
     </div>
     <div class="grid">
       <div class="card"><div class="k">Score</div><div class="v acc" id="kScore">-</div></div>
-      <div class="card"><div class="k">Tests OK</div><div class="v ok" id="kOk">-</div></div>
-      <div class="card"><div class="k">Warnings</div><div class="v warn" id="kWarn">-</div></div>
-      <div class="card"><div class="k">Errors</div><div class="v err" id="kErr">-</div></div>
-      <div class="card"><div class="k">Latency Under Load</div><div class="v" id="kLatency">N/A</div></div>
+      <div class="card"><div class="k">Tests réussis</div><div class="v ok" id="kOk">-</div></div>
+      <div class="card"><div class="k">Avertissements</div><div class="v warn" id="kWarn">-</div></div>
+      <div class="card"><div class="k">Erreurs</div><div class="v err" id="kErr">-</div></div>
+      <div class="card"><div class="k">Latence sous charge</div><div class="v" id="kLatency">N/A</div></div>
+      <div class="card"><div class="k">Heure du test</div><div class="v" style="font-size:20px" id="kTime" title="$timestamp">$timestampTime</div></div>
     </div>
     <div class="layout">
       <div class="panel">
         <h3>Tests</h3>
-        <table><thead><tr><th>Test</th><th>Cible</th><th>Statut</th><th>Detail</th></tr></thead><tbody id="testsBody"></tbody></table>
+        <table><thead><tr><th>Test</th><th>Cible</th><th>Statut</th><th>Détail</th></tr></thead><tbody id="testsBody"></tbody></table>
       </div>
       <div class="panel">
-        <h3>Network Load (Before / Under / After)</h3>
-        <table><thead><tr><th>Phase</th><th>Avg (ms)</th><th>Max (ms)</th><th>Loss (%)</th></tr></thead><tbody id="loadBody"></tbody></table>
+        <h3>Charge réseau (Avant / Pendant / Après)</h3>
+        <table><thead><tr><th>Phase</th><th>Moy (ms)</th><th>Max (ms)</th><th>Perte (%)</th></tr></thead><tbody id="loadBody"></tbody></table>
       </div>
     </div>
     <div class="layout">
       <div class="panel">
-        <h3>Configuration reseau</h3>
-        <table><tbody id="netBody"></tbody></table>
+        <h3>Configuration r&eacute;seau</h3>
+        <table><tbody id="netBody">$networkRowsHtml</tbody></table>
       </div>
       <div class="panel">
         <h3>Recommandations</h3>
-        <ul class="rec" id="recList"></ul>
+        <ul class="rec" id="recList">$recommendationsHtml</ul>
       </div>
     </div>
   </div>
@@ -985,35 +1008,68 @@ function New-DiagnosticDashboardHtml {
     const d = JSON.parse(document.getElementById("diag-data").textContent);
     const statusClass = s => s==="OK"||s==="HEALTHY"?"b-ok":(s==="WARNING"||s==="AVERTISSEMENT"?"b-warn":"b-err");
     const safe = v => v===null||v===undefined||v===""?"N/A":v;
-    document.getElementById("meta").textContent = `${safe(d.Metadata.ComputerName)} • ${safe(d.Network.InterfaceAlias)} • ${safe(d.Network.LocalIPv4)} • ${safe(d.Metadata.Timestamp)}`;
+    const formatTimestamp = function(ts, timeOnly) {
+      if (!ts) return "N/A";
+      const dt = new Date(ts);
+      if (isNaN(dt.getTime())) return ts;
+      const pad2 = n => String(n).padStart(2, "0");
+      const day = pad2(dt.getDate());
+      const month = pad2(dt.getMonth() + 1);
+      const year = dt.getFullYear();
+      const hh = pad2(dt.getHours());
+      const mm = pad2(dt.getMinutes());
+      const ss = pad2(dt.getSeconds());
+      if (timeOnly) return hh + ":" + mm + ":" + ss;
+      return day + "/" + month + "/" + year + " " + hh + ":" + mm + ":" + ss;
+    };
+    const tsFormatted = formatTimestamp(d.Metadata ? d.Metadata.Timestamp : null, false);
+    const tsTimeOnly = formatTimestamp(d.Metadata ? d.Metadata.Timestamp : null, true);
+    document.getElementById("meta").textContent = safe(d.Metadata.ComputerName) + " | " + safe(d.Network.InterfaceAlias) + " | " + safe(d.Network.LocalIPv4) + " | " + tsFormatted;
     const g = document.getElementById("globalBadge");
     g.className = "badge " + statusClass(d.Analysis.Status || d.OverallStatus); g.textContent = safe(d.Analysis.Status || d.OverallStatus);
-    document.getElementById("kScore").textContent = `${safe(d.Score.Value)}/${safe(d.Score.Max)}`;
+    document.getElementById("kScore").textContent = safe(d.Score.Value) + "/" + safe(d.Score.Max);
     document.getElementById("kOk").textContent = safe(d.Summary.SuccessCount);
     document.getElementById("kWarn").textContent = safe(d.Summary.WarningCount);
     document.getElementById("kErr").textContent = safe(d.Summary.FailureCount);
-    document.getElementById("kLatency").textContent = d.LoadTest && d.LoadTest.UnderLoad ? `${safe(d.LoadTest.UnderLoad.AverageLatencyMs)} ms` : "N/A";
+    document.getElementById("kLatency").textContent = d.LoadTest && d.LoadTest.UnderLoad ? (safe(d.LoadTest.UnderLoad.AverageLatencyMs) + " ms") : "N/A";
+    const kTime = document.getElementById("kTime");
+    kTime.textContent = tsTimeOnly;
+    kTime.title = safe(d.Metadata ? d.Metadata.Timestamp : null);
     const testsBody = document.getElementById("testsBody");
     (d.Tests || []).forEach(t => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${safe(t.Test)}</td><td>${safe(t.Cible)}</td><td><span class="badge ${statusClass(t.Statut)}">${safe(t.Statut)}</span></td><td>${safe(t.Detail)}</td>`;
+      tr.innerHTML = "<td>" + safe(t.Test) + "</td><td>" + safe(t.Cible) + "</td><td><span class=\"badge " + statusClass(t.Statut) + "\">" + safe(t.Statut) + "</span></td><td>" + safe(t.Detail) + "</td>";
       testsBody.appendChild(tr);
     });
     const loadBody = document.getElementById("loadBody");
-    [["Before", d.LoadTest?.Before], ["Under", d.LoadTest?.UnderLoad], ["After", d.LoadTest?.After]].forEach(([n,v]) => {
+    [["Avant", d.LoadTest ? d.LoadTest.Before : null], ["Charge", d.LoadTest ? d.LoadTest.UnderLoad : null], ["Après", d.LoadTest ? d.LoadTest.After : null]].forEach(function(item) {
+      const n = item[0];
+      const v = item[1];
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${n}</td><td>${safe(v?.AverageLatencyMs)}</td><td>${safe(v?.MaxLatencyMs)}</td><td>${safe(v?.PacketLossPercent)}</td>`;
+      tr.innerHTML = "<td>" + n + "</td><td>" + safe(v ? v.AverageLatencyMs : null) + "</td><td>" + safe(v ? v.MaxLatencyMs : null) + "</td><td>" + safe(v ? v.PacketLossPercent : null) + "</td>";
       loadBody.appendChild(tr);
     });
     const netRows = [
       ["IPv4", d.Network.LocalIPv4], ["Masque", d.Network.SubnetMask], ["Passerelle", d.Network.Gateway],
       ["DNS", (d.Network.DnsServers||[]).join(", ")], ["DHCP", d.Network.DhcpEnabled], ["MAC", d.Network.MacAddress],
-      ["Wi-Fi SSID", d.Wifi?.Ssid], ["TCP Target", d.Ports?.Target], ["TCP Open/Closed", `${safe(d.Ports?.OpenCount)}/${safe(d.Ports?.ClosedCount)}`]
+      ["Wi-Fi SSID", d.Wifi ? d.Wifi.Ssid : null], ["TCP Target", d.Ports ? d.Ports.Target : null], ["TCP Open/Closed", safe(d.Ports ? d.Ports.OpenCount : null) + "/" + safe(d.Ports ? d.Ports.ClosedCount : null)]
     ];
     const netBody = document.getElementById("netBody");
-    netRows.forEach(([k,v]) => { const tr=document.createElement("tr"); tr.innerHTML=`<th>${k}</th><td>${safe(v)}</td>`; netBody.appendChild(tr); });
+    netBody.innerHTML = "";
+    netRows.forEach(function(item) {
+      const k = item[0];
+      const v = item[1];
+      const tr = document.createElement("tr");
+      tr.innerHTML = "<th>" + k + "</th><td>" + safe(v) + "</td>";
+      netBody.appendChild(tr);
+    });
     const recList = document.getElementById("recList");
-    (d.Analysis?.Recommendations || ["Aucune recommendation."]).forEach(r => { const li=document.createElement("li"); li.textContent=r; recList.appendChild(li); });
+    recList.innerHTML = "";
+    (d.Analysis && d.Analysis.Recommendations ? d.Analysis.Recommendations : ["Aucune recommandation."]).forEach(function(r) {
+      const li = document.createElement("li");
+      li.textContent = r;
+      recList.appendChild(li);
+    });
   </script>
 </body>
 </html>
@@ -1059,7 +1115,6 @@ $wifiDiagnostic = Get-WifiDiagnostics -IncludeScan:$IncludeWifiScan
 $loadTestResult = Invoke-ControlledNetworkLoadTest -LoadTarget $LoadTestTarget -MonitorTarget $LoadTestMonitorTarget -SampleCount $LoadTestSampleCount -DurationSec $LoadTestDurationSec -ParallelStreams $LoadTestParallelStreams
 $bandwidthResult = Invoke-BandwidthDiagnostic -Enabled:$EnableBandwidthTest -TestUrl $BandwidthTestUrl -TimeoutSec $BandwidthTimeoutSec
 
-$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $diagnosticResult = New-DiagnosticResult -DnsServerValue $DnsServer -InternetHostValue $InternetHost -PingCountValue $PingCount
 $diagnosticResult.Parameters.DnsTestDomains = @($DnsTestDomains)
 $diagnosticResult.Parameters.RoutingTraceTarget = $RoutingTraceTarget
@@ -1135,7 +1190,7 @@ function Test-NetworkTarget {
         Test              = $Label
         Cible             = $Target
         Statut            = if ($result) { "OK" } else { "ECHEC" }
-        Detail            = if ($result) { "Connexion reussie" } else { "Aucune reponse" }
+        Detail            = if ($result) { "Connexion réussie" } else { "Aucune réponse" }
         AttemptCount      = $PingCount
         SuccessCount      = $successCount
         PacketLossPercent = $packetLossPercent
@@ -1152,7 +1207,7 @@ Write-Host "Interface : $interfaceAlias ($interfaceStatus)"
 Write-Host "Vitesse lien : $linkSpeed"
 Write-Host "DHCP : $($dhcpDiagnostic.Enabled)"
 Write-Host "Serveur DHCP : $($dhcpDiagnostic.Server)"
-Write-Host "DNS detectes : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non detectes' })"
+Write-Host "DNS détectés : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non détectés' })"
 
 Write-UiSection -Title "[2] Test connexion Internet ($InternetHost)"
 $internetTest = Test-NetworkTarget -Target $InternetHost -Label "Connexion Internet"
@@ -1184,9 +1239,9 @@ $dhcpTest = [PSCustomObject]@{
 Write-TestResultLine -Status $dhcpTest.Statut -Detail $dhcpTest.Detail
 $diagnosticResult.Tests += $dhcpTest
 
-Write-UiSection -Title "[6] Test resolution DNS"
+Write-UiSection -Title "[6] Test résolution DNS"
 $dnsResolutionTest = [PSCustomObject]@{
-    Test              = "DNS Resolution"
+    Test              = "Résolution DNS"
     Cible             = $effectiveDnsServer
     Statut            = $dnsResolutionDiagnostic.Status
     Detail            = $dnsResolutionDiagnostic.Detail
@@ -1201,7 +1256,7 @@ $diagnosticResult.Tests += $dnsResolutionTest
 
 Write-UiSection -Title "[7] Test routage"
 $routingTest = [PSCustomObject]@{
-    Test              = "Routing"
+    Test              = "Routage"
     Cible             = $RoutingTraceTarget
     Statut            = $routingDiagnostic.Status
     Detail            = $routingDiagnostic.Detail
@@ -1212,8 +1267,8 @@ $routingTest = [PSCustomObject]@{
     MaxLatencyMs      = $null
 }
 Write-TestResultLine -Status $routingTest.Statut -Detail $routingTest.Detail
-Write-Host "Route defaut : $($routingDiagnostic.DefaultRoute)"
-Write-Host "Interface route : $($routingDiagnostic.InterfaceAlias)"
+Write-Host "Route défaut : $($routingDiagnostic.DefaultRoute)"
+Write-Host "Interface de route : $($routingDiagnostic.InterfaceAlias)"
 Write-Host "Passerelle joignable : $(if ($routingDiagnostic.NextHopReachable) { 'Oui' } else { 'Non' })"
 $diagnosticResult.Tests += $routingTest
 
@@ -1222,7 +1277,7 @@ foreach ($entry in $tcpPortDiagnostic.Entries) {
     Write-Host "$($entry.Service) $($entry.Port) : $($entry.Status) ($($entry.LatencyMs) ms)"
 }
 $tcpPortTest = [PSCustomObject]@{
-    Test              = "TCP Ports"
+    Test              = "Ports TCP"
     Cible             = $effectiveTcpTarget
     Statut            = $tcpPortDiagnostic.Status
     Detail            = $tcpPortDiagnostic.Detail
@@ -1254,9 +1309,9 @@ Write-Host "Signal : $(if ($wifiDiagnostic.SignalPercent -ne $null) { "$($wifiDi
 Write-Host "Canal : $($wifiDiagnostic.Channel)"
 $diagnosticResult.Tests += $wifiTest
 
-Write-UiSection -Title "[10] Test charge reseau controlee"
+Write-UiSection -Title "[10] Test charge réseau contrôlée"
 $loadTest = [PSCustomObject]@{
-    Test              = "Network Load"
+    Test              = "Charge réseau"
     Cible             = "$LoadTestTarget (monitor: $LoadTestMonitorTarget)"
     Statut            = $loadTestResult.Status
     Detail            = $loadTestResult.Detail
@@ -1267,15 +1322,15 @@ $loadTest = [PSCustomObject]@{
     MaxLatencyMs      = $loadTestResult.UnderLoad.MaxLatencyMs
 }
 Write-TestResultLine -Status $loadTest.Statut -Detail $loadTest.Detail
-Write-Host "Before : avg $($loadTestResult.Before.AverageLatencyMs) ms / loss $($loadTestResult.Before.PacketLossPercent)%"
-Write-Host "Under  : avg $($loadTestResult.UnderLoad.AverageLatencyMs) ms / max $($loadTestResult.UnderLoad.MaxLatencyMs) ms / loss $($loadTestResult.UnderLoad.PacketLossPercent)%"
-Write-Host "After  : avg $($loadTestResult.After.AverageLatencyMs) ms / loss $($loadTestResult.After.PacketLossPercent)%"
-Write-Host "Delta avg/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms"
+Write-Host "Avant  : moy $($loadTestResult.Before.AverageLatencyMs) ms / perte $($loadTestResult.Before.PacketLossPercent)%"
+Write-Host "Charge : moy $($loadTestResult.UnderLoad.AverageLatencyMs) ms / max $($loadTestResult.UnderLoad.MaxLatencyMs) ms / perte $($loadTestResult.UnderLoad.PacketLossPercent)%"
+Write-Host "Après  : moy $($loadTestResult.After.AverageLatencyMs) ms / perte $($loadTestResult.After.PacketLossPercent)%"
+Write-Host "Delta moy/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms"
 $diagnosticResult.Tests += $loadTest
 
-Write-UiSection -Title "[11] Test debit reseau"
+Write-UiSection -Title "[11] Test débit réseau"
 $bandwidthTest = [PSCustomObject]@{
-    Test              = "Bandwidth"
+    Test              = "Débit"
     Cible             = $BandwidthTestUrl
     Statut            = $bandwidthResult.Status
     Detail            = $bandwidthResult.Detail
@@ -1286,7 +1341,7 @@ $bandwidthTest = [PSCustomObject]@{
     MaxLatencyMs      = $null
 }
 if ($bandwidthResult.Status -eq "OK") {
-    Write-TestResultLine -Status "OK" -Detail "Download ~ $($bandwidthResult.DownloadMbps) Mbps ($($bandwidthResult.DownloadBytes) octets en $($bandwidthResult.DurationMs) ms)"
+Write-TestResultLine -Status "OK" -Detail "Téléchargement ~ $($bandwidthResult.DownloadMbps) Mbps ($($bandwidthResult.DownloadBytes) octets en $($bandwidthResult.DurationMs) ms)"
 }
 else {
     Write-TestResultLine -Status $bandwidthResult.Status -Detail $bandwidthResult.Detail
@@ -1303,9 +1358,9 @@ $diagnosticResult.Score = $scoreResult
 $overallStatus = $analysisResult.Status
 
 Write-UiSection -Title "Diagnostic final"
-Write-Host "Etat global : $overallStatus"
+Write-Host "État global : $overallStatus"
 Write-Host "Score : $($scoreResult.Value)/$($scoreResult.Max) ($($scoreResult.Level))"
-Write-Host "Succes : $($diagnosticResult.Summary.SuccessCount) | Avertissements : $($diagnosticResult.Summary.WarningCount) | Echecs : $($diagnosticResult.Summary.FailureCount)"
+Write-Host "Succès : $($diagnosticResult.Summary.SuccessCount) | Avertissements : $($diagnosticResult.Summary.WarningCount) | Échecs : $($diagnosticResult.Summary.FailureCount)"
 Write-Host "Analyse : $($analysisResult.Detail)"
 if (@($analysisResult.Recommendations).Count -gt 0) {
     Write-Host "Recommandation principale : $($analysisResult.Recommendations[0])"
@@ -1314,7 +1369,7 @@ if (@($analysisResult.Recommendations).Count -gt 0) {
 # Construction du rapport
 $reportLines = @(
     "=== DIAGNOSTIC RESEAU ===",
-    "Date : $(Get-Date -Format \"dd/MM/yyyy HH:mm:ss\")",
+    "Date : $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')",
     "Machine : $env:COMPUTERNAME",
     "Utilisateur : $env:USERNAME",
     "",
@@ -1327,12 +1382,12 @@ $reportLines = @(
     "Passerelle : $gateway",
     "DHCP : $($dhcpDiagnostic.Enabled)",
     "Serveur DHCP : $($dhcpDiagnostic.Server)",
-    "Bail DHCP debut : $(if ($dhcpDiagnostic.LeaseStart) { $dhcpDiagnostic.LeaseStart } else { 'Non detecte' })",
+    "Bail DHCP début : $(if ($dhcpDiagnostic.LeaseStart) { $dhcpDiagnostic.LeaseStart } else { 'Non detecte' })",
     "Bail DHCP fin : $(if ($dhcpDiagnostic.LeaseEnd) { $dhcpDiagnostic.LeaseEnd } else { 'Non detecte' })",
     "APIPA : $(if ($dhcpDiagnostic.IsApipa) { 'Oui' } else { 'Non' })",
-    "DNS detectes : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non detectes' })",
+    "DNS détectés : $(if ($dnsServers.Count -gt 0) { $dnsServers -join ', ' } else { 'Non détectés' })",
     "",
-    "[2] Resultats des tests",
+    "[2] Résultats des tests",
     "- $($internetTest.Test) [$($internetTest.Cible)] : $($internetTest.Statut) - $($internetTest.Detail)",
     "- $($gatewayTest.Test) [$($gatewayTest.Cible)] : $($gatewayTest.Statut) - $($gatewayTest.Detail)",
     "- $($dnsTest.Test) [$($dnsTest.Cible)] : $($dnsTest.Statut) - $($dnsTest.Detail)",
@@ -1344,66 +1399,66 @@ $reportLines = @(
     "- $($loadTest.Test) [$($loadTest.Cible)] : $($loadTest.Statut) - $($loadTest.Detail)",
     "- $($bandwidthTest.Test) [$($bandwidthTest.Cible)] : $($bandwidthTest.Statut) - $($bandwidthTest.Detail)",
     "",
-    "[3] DNS resolution details",
-    "Serveur teste : $effectiveDnsServer",
-    "Domaines testes : $(@($dnsResolutionDiagnostic.Domains) -join ', ')",
-    "Succes : $($dnsResolutionDiagnostic.SuccessCount)",
-    "Echecs : $($dnsResolutionDiagnostic.FailureCount)",
+    "[3] Détails résolution DNS",
+    "Serveur testé : $effectiveDnsServer",
+    "Domaines testés : $(@($dnsResolutionDiagnostic.Domains) -join ', ')",
+    "Succès : $($dnsResolutionDiagnostic.SuccessCount)",
+    "Échecs : $($dnsResolutionDiagnostic.FailureCount)",
     "Statut : $($dnsResolutionDiagnostic.Status) - $($dnsResolutionDiagnostic.Detail)",
     "",
-    "[4] Routing details",
+    "[4] Détails routage",
     "Cible traceroute : $RoutingTraceTarget",
-    "Route defaut : $($routingDiagnostic.DefaultRoute)",
+    "Route défaut : $($routingDiagnostic.DefaultRoute)",
     "Interface : $($routingDiagnostic.InterfaceAlias)",
     "Passerelle joignable : $(if ($routingDiagnostic.NextHopReachable) { 'Oui' } else { 'Non' })",
     "Statut : $($routingDiagnostic.Status) - $($routingDiagnostic.Detail)",
     "",
-    "[5] TCP ports details",
+    "[5] Détails ports TCP",
     "Cible : $effectiveTcpTarget",
-    "Ports testes : $(@($TcpPorts) -join ', ')",
+    "Ports testés : $(@($TcpPorts) -join ', ')",
     "Ouverts : $($tcpPortDiagnostic.OpenCount)",
     "Fermes : $($tcpPortDiagnostic.ClosedCount)",
     "Statut : $($tcpPortDiagnostic.Status) - $($tcpPortDiagnostic.Detail)",
     "",
-    "[6] Wi-Fi details",
+    "[6] Détails Wi-Fi",
     "Interface : $($wifiDiagnostic.InterfaceName)",
     "SSID : $($wifiDiagnostic.Ssid)",
     "BSSID : $($wifiDiagnostic.Bssid)",
     "Signal : $(if ($wifiDiagnostic.SignalPercent -ne $null) { "$($wifiDiagnostic.SignalPercent)%" } else { 'N/A' })",
     "Canal : $($wifiDiagnostic.Channel)",
     "Radio : $($wifiDiagnostic.RadioType)",
-    "Debit RX/TX (Mbps) : $(if ($wifiDiagnostic.ReceiveRateMbps -ne $null -and $wifiDiagnostic.TransmitRateMbps -ne $null) { "$($wifiDiagnostic.ReceiveRateMbps)/$($wifiDiagnostic.TransmitRateMbps)" } else { 'N/A' })",
-    "Reseaux detectes : $(if ($wifiDiagnostic.NearbyCount -ne $null) { $wifiDiagnostic.NearbyCount } else { 'N/A' })",
+    "Débit RX/TX (Mbps) : $(if ($wifiDiagnostic.ReceiveRateMbps -ne $null -and $wifiDiagnostic.TransmitRateMbps -ne $null) { "$($wifiDiagnostic.ReceiveRateMbps)/$($wifiDiagnostic.TransmitRateMbps)" } else { 'N/A' })",
+    "Réseaux détectés : $(if ($wifiDiagnostic.NearbyCount -ne $null) { $wifiDiagnostic.NearbyCount } else { 'N/A' })",
     "Statut : $($wifiDiagnostic.Status) - $($wifiDiagnostic.Detail)",
     "",
-    "[7] Network load details",
+    "[7] Détails charge réseau",
     "Charge cible : $LoadTestTarget",
     "Cible mesure : $LoadTestMonitorTarget",
-    "Duree / streams : ${LoadTestDurationSec}s / $LoadTestParallelStreams",
-    "Before : avg $($loadTestResult.Before.AverageLatencyMs) ms, max $($loadTestResult.Before.MaxLatencyMs) ms, loss $($loadTestResult.Before.PacketLossPercent)%",
-    "Under  : avg $($loadTestResult.UnderLoad.AverageLatencyMs) ms, max $($loadTestResult.UnderLoad.MaxLatencyMs) ms, loss $($loadTestResult.UnderLoad.PacketLossPercent)%",
-    "After  : avg $($loadTestResult.After.AverageLatencyMs) ms, max $($loadTestResult.After.MaxLatencyMs) ms, loss $($loadTestResult.After.PacketLossPercent)%",
-    "Delta avg/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms",
+    "Durée / flux : ${LoadTestDurationSec}s / $LoadTestParallelStreams",
+    "Avant  : moy $($loadTestResult.Before.AverageLatencyMs) ms, max $($loadTestResult.Before.MaxLatencyMs) ms, perte $($loadTestResult.Before.PacketLossPercent)%",
+    "Charge : moy $($loadTestResult.UnderLoad.AverageLatencyMs) ms, max $($loadTestResult.UnderLoad.MaxLatencyMs) ms, perte $($loadTestResult.UnderLoad.PacketLossPercent)%",
+    "Après  : moy $($loadTestResult.After.AverageLatencyMs) ms, max $($loadTestResult.After.MaxLatencyMs) ms, perte $($loadTestResult.After.PacketLossPercent)%",
+    "Delta moy/max : $($loadTestResult.AvgLatencyDeltaMs) / $($loadTestResult.MaxLatencyDeltaMs) ms",
     "Statut : $($loadTestResult.Status) - $($loadTestResult.Detail)",
     "",
-    "[8] Bandwidth details",
-    "Active : $([bool]$EnableBandwidthTest)",
+    "[8] Détails débit",
+    "Activé : $([bool]$EnableBandwidthTest)",
     "URL : $BandwidthTestUrl",
-    "Download (Mbps) : $(if ($bandwidthResult.DownloadMbps -ne $null) { $bandwidthResult.DownloadMbps } else { 'N/A' })",
-    "Donnees lues (octets) : $(if ($bandwidthResult.DownloadBytes -ne $null) { $bandwidthResult.DownloadBytes } else { 'N/A' })",
-    "Duree (ms) : $(if ($bandwidthResult.DurationMs -ne $null) { $bandwidthResult.DurationMs } else { 'N/A' })",
+    "Téléchargement (Mbps) : $(if ($bandwidthResult.DownloadMbps -ne $null) { $bandwidthResult.DownloadMbps } else { 'N/A' })",
+    "Données lues (octets) : $(if ($bandwidthResult.DownloadBytes -ne $null) { $bandwidthResult.DownloadBytes } else { 'N/A' })",
+    "Durée (ms) : $(if ($bandwidthResult.DurationMs -ne $null) { $bandwidthResult.DurationMs } else { 'N/A' })",
     "Statut : $($bandwidthResult.Status) - $($bandwidthResult.Detail)",
     "",
-    "[9] Resume",
-    "Etat global : $overallStatus",
+    "[9] Résumé",
+    "État global : $overallStatus",
     "Score : $($scoreResult.Value)/$($scoreResult.Max) ($($scoreResult.Level))",
-    "Succes : $($diagnosticResult.Summary.SuccessCount)",
-    "Echecs : $($diagnosticResult.Summary.FailureCount)",
+    "Succès : $($diagnosticResult.Summary.SuccessCount)",
+    "Échecs : $($diagnosticResult.Summary.FailureCount)",
     "Avertissements : $($diagnosticResult.Summary.WarningCount)",
     "",
     "[10] Analyse",
     "Statut analyse : $($analysisResult.Status)",
-    "Detail : $($analysisResult.Detail)",
+    "Détail : $($analysisResult.Detail)",
     "",
     "[11] ipconfig /all",
     ""
@@ -1430,32 +1485,32 @@ if (@($tcpPortDiagnostic.Entries).Count -gt 0) {
 
 if (@($analysisResult.Findings).Count -gt 0) {
     $reportLines += ""
-    $reportLines += "[Findings]"
+    $reportLines += "[Constats]"
     $reportLines += @($analysisResult.Findings)
 }
 
 if (@($analysisResult.Recommendations).Count -gt 0) {
     $reportLines += ""
-    $reportLines += "[Recommendations]"
+    $reportLines += "[Recommandations]"
     $reportLines += @($analysisResult.Recommendations)
 }
 
-$stopwatch.Stop()
-$diagnosticResult.Metadata.DurationMs = $stopwatch.ElapsedMilliseconds
-$diagnosticResult | Add-Member -MemberType NoteProperty -Name OverallStatus -Value $overallStatus -Force
-
 $reportLines | Out-File -FilePath $reportFile -Encoding UTF8
 ipconfig /all | Out-File -FilePath $reportFile -Append -Encoding UTF8
-$diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
 if ($GenerateDashboard) {
     New-DiagnosticDashboardHtml -ResultObject $diagnosticResult -OutputPath $htmlReportFile
 }
 
+$diagnosticStopwatch.Stop()
+$diagnosticResult.Metadata.DurationMs = $diagnosticStopwatch.ElapsedMilliseconds
+$diagnosticResult | Add-Member -MemberType NoteProperty -Name OverallStatus -Value $overallStatus -Force
+$diagnosticResult | ConvertTo-Json -Depth 6 | Out-File -FilePath $jsonReportFile -Encoding UTF8
+
 Write-UiSection -Title "[12] Sauvegarde du rapport"
-Write-Host "Diagnostic termine. Rapport TXT sauvegarde : $reportFile" -ForegroundColor Green
-Write-Host "Rapport JSON sauvegarde : $jsonReportFile" -ForegroundColor Green
+Write-Host "Diagnostic terminé. Rapport TXT sauvegardé : $reportFile" -ForegroundColor Green
+Write-Host "Rapport JSON sauvegardé : $jsonReportFile" -ForegroundColor Green
 if ($GenerateDashboard) {
-    Write-Host "Dashboard HTML sauvegarde : $htmlReportFile" -ForegroundColor Green
+    Write-Host "Dashboard HTML sauvegardé : $htmlReportFile" -ForegroundColor Green
     if ($OpenDashboard) {
         Start-Process $htmlReportFile
     }

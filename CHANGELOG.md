@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Finalisation et stabilisation de la phase de démonstration.
+- Harmonisation de l’interface terminal/dashboard en français.
+- Ajustement de l’affichage horaire du dashboard (HH:mm:ss, sans millisecondes).
+- Amélioration de robustesse du rendu dashboard local (sections réseau/recommandations remplies).
+- Correction du calcul de `DurationMs` pour couvrir l’exécution complète.
+- Suppression de dette technique (`Get-OverallStatus` inutilisée).
+- Mise à jour documentation (README + guide technicien L1/L2).
+
 ## [2026-09-11]
 
 ### Added
